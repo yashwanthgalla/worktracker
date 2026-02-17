@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+﻿import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AuthService } from '../../services/authService';
@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/appStore';
 import {
   LayoutDashboard, CheckSquare, Clock, BarChart3, Brain,
   Calendar, MessageSquare, Settings, LogOut, ChevronLeft,
-  ChevronRight, Sparkles, Zap,
+  ChevronRight, Zap,
 } from 'lucide-react';
 
 const navItems = [
@@ -69,10 +69,9 @@ export const Sidebar = () => {
             to={item.to}
             end={item.to === '/'}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group relative ${
-                isActive
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : 'text-[#6e6e73] hover:bg-black/[0.03] hover:text-[#1d1d1f]'
+              `flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group relative ${isActive
+                ? 'bg-emerald-50 text-emerald-700'
+                : 'text-[#6e6e73] hover:bg-black/[0.03] hover:text-[#1d1d1f]'
               }`
             }
           >
@@ -127,8 +126,7 @@ export const Sidebar = () => {
         <NavLink
           to="/settings"
           className={({ isActive }) =>
-            `flex items-center gap-3 px-3 py-2 rounded-xl transition-colors ${
-              isActive ? 'bg-gray-100 text-[#1d1d1f]' : 'text-[#86868b] hover:bg-black/[0.03] hover:text-[#1d1d1f]'
+            `flex items-center gap-3 px-3 py-2 rounded-xl transition-colors ${isActive ? 'bg-gray-100 text-[#1d1d1f]' : 'text-[#86868b] hover:bg-black/[0.03] hover:text-[#1d1d1f]'
             }`
           }
         >

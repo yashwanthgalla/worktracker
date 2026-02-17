@@ -2,7 +2,7 @@ import { supabase } from '../lib/supabase';
 import type { WorkSession } from '../types/database.types';
 
 // Helper
-function mapSessionFromDB(dbSession: any): WorkSession {
+function mapSessionFromDB(dbSession: Record<string, unknown>): WorkSession {
   return {
     ...dbSession,
     started_at: new Date(dbSession.started_at),

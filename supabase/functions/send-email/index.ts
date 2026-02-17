@@ -7,7 +7,13 @@
 //
 // Alternatively, you can use any SMTP provider by adapting the fetch call.
 
-// @ts-nocheck — Deno types are available in Supabase Edge runtime only
+// Deno types are available in Supabase Edge runtime only
+declare const Deno: {
+  serve: (handler: (req: Request) => Promise<Response>) => void;
+  env: {
+    get: (key: string) => string | undefined;
+  };
+};
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',

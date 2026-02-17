@@ -2,7 +2,7 @@ import { supabase } from '../lib/supabase';
 import type { Task, Json } from '../types/database.types';
 
 // Helpers
-function mapTaskFromDB(dbTask: any): Task {
+function mapTaskFromDB(dbTask: Record<string, unknown>): Task {
   return {
     ...dbTask,
     due_date: dbTask.due_date ? new Date(dbTask.due_date) : undefined,
@@ -83,7 +83,7 @@ export async function getSubtasks(parentId: string) {
 
 // Update
 export async function updateTask(id: string, updates: Partial<Task>) {
-  const updateData: any = {};
+  const updateData: Record<string, unknown> = {};
 
   if (updates.title !== undefined) updateData.title = updates.title;
   if (updates.description !== undefined) updateData.description = updates.description;

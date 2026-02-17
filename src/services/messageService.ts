@@ -1,10 +1,10 @@
-import { supabase } from '../lib/supabase';
+﻿import { supabase } from '../lib/supabase';
 import type { Conversation, Message, ConversationParticipant } from '../types/database.types';
 
-// ═══════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Message Service
 // Handles conversations, messages, and real-time chat
-// ═══════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 /** Get or create a 1:1 conversation between current user and another */
 export async function getOrCreateDirectConversation(otherUserId: string): Promise<Conversation | null> {
@@ -36,30 +36,85 @@ export async function getOrCreateDirectConversation(otherUserId: string): Promis
           .eq('is_group', false)
           .single();
 
-        if (conv) return conv as Conversation;
+        if (conv) {
+          console.log('[getOrCreateDM] Found existing conversation:', conv.id);
+          return conv as Conversation;
+        }
+      }
+    }
+  }
+
+  // Also check: are there any conversations I created with this person that are
+  // broken (conversation exists but participant rows are missing)?
+  // Look for conversations created by me that have no participants at all
+  const { data: orphanConvs } = await supabase
+    .from('conversations')
+    .select('id')
+    .eq('created_by', user.id)
+    .eq('is_group', false);
+
+  if (orphanConvs && orphanConvs.length > 0) {
+    // Delete any orphaned conversations I created (no participants)
+    for (const oc of orphanConvs) {
+      const { count } = await supabase
+        .from('conversation_participants')
+        .select('*', { count: 'exact', head: true })
+        .eq('conversation_id', oc.id);
+
+      if (count === 0 || count === null) {
+        console.log('[getOrCreateDM] Cleaning up orphaned conversation:', oc.id);
+        await supabase.from('conversations').delete().eq('id', oc.id);
       }
     }
   }
 
   // Create new conversation
-  const { data: conv, error: convError } = await supabase
-    .from('conversations')
-    .insert({ is_group: false, created_by: user.id })
-    .select()
-    .single();
+  const convId = crypto.randomUUID();
+  console.log('[getOrCreateDM] Creating new conversation:', convId);
 
-  if (convError || !conv) {
-    console.warn('Create conversation error:', convError?.message);
+  const { error: convError } = await supabase
+    .from('conversations')
+    .insert({ id: convId, is_group: false, created_by: user.id });
+
+  if (convError) {
+    console.error('[getOrCreateDM] Create conversation error:', convError.message);
     return null;
   }
 
-  // Add both participants
-  await supabase.from('conversation_participants').insert([
-    { conversation_id: conv.id, user_id: user.id },
-    { conversation_id: conv.id, user_id: otherUserId },
-  ]);
+  // Add current user first (satisfies RLS: user_id = auth.uid())
+  const { error: selfErr } = await supabase
+    .from('conversation_participants')
+    .insert({ conversation_id: convId, user_id: user.id });
 
-  return conv as Conversation;
+  if (selfErr) {
+    console.error('[getOrCreateDM] Add self failed:', selfErr.message, selfErr.details);
+    await supabase.from('conversations').delete().eq('id', convId);
+    return null;
+  }
+
+  // Now add the other user (RLS passes: conversation_id has auth.uid() as participant)
+  const { error: otherErr } = await supabase
+    .from('conversation_participants')
+    .insert({ conversation_id: convId, user_id: otherUserId });
+
+  if (otherErr) {
+    console.error('[getOrCreateDM] Add other user failed:', otherErr.message, otherErr.details);
+    // Don't delete — self is already a participant, so the conversation is half-created.
+    // sendMessage's auto-repair might fix this later, or we can still use it.
+    // But log it clearly.
+    console.warn('[getOrCreateDM] Conversation created with only self as participant');
+  } else {
+    console.log('[getOrCreateDM] Both participants added successfully');
+  }
+
+  // Now we can SELECT the conversation (user is a participant, RLS passes)
+  const { data: newConv } = await supabase
+    .from('conversations')
+    .select('*')
+    .eq('id', convId)
+    .single();
+
+  return (newConv || { id: convId, is_group: false, created_by: user.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }) as Conversation;
 }
 
 /** Get all conversations for current user with last message and unread count */
@@ -154,32 +209,81 @@ export async function getMessages(conversationId: string, limit = 50, before?: s
   return ((data || []) as Message[]).reverse();
 }
 
-/** Send a message */
+/** Send a message (self-healing: auto-repairs missing participant rows) */
 export async function sendMessage(
   conversationId: string,
   content: string,
   messageType: 'text' | 'image' | 'file' = 'text',
-  metadata?: any
+  metadata?: Record<string, unknown>
 ): Promise<Message | null> {
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
-
-  const { data, error } = await supabase
-    .from('messages')
-    .insert({
-      conversation_id: conversationId,
-      sender_id: user.id,
-      content,
-      message_type: messageType,
-      metadata,
-    })
-    .select('*, sender:user_profiles(*)')
-    .single();
-
-  if (error) {
-    console.warn('Send message error:', error.message);
+  if (!user) {
+    console.error('[sendMessage] No authenticated user');
     return null;
   }
+
+  // Helper: attempt to insert the message
+  const tryInsert = async () => {
+    return supabase
+      .from('messages')
+      .insert({
+        conversation_id: conversationId,
+        sender_id: user.id,
+        content,
+        message_type: messageType,
+        metadata: metadata ? (metadata as unknown as import('../types/database.types').Json) : undefined,
+      })
+      .select('*, sender:user_profiles(*)')
+      .single();
+  };
+
+  // First attempt
+  let { data, error } = await tryInsert();
+
+  // If RLS blocked us (user not a participant), auto-repair and retry
+  if (error) {
+    console.warn('[sendMessage] First insert failed:', error.code, error.message);
+
+    // Ensure conversation exists
+    const { data: convExists } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('id', conversationId)
+      .maybeSingle();
+
+    if (!convExists) {
+      console.error('[sendMessage] Conversation does not exist:', conversationId);
+      return null;
+    }
+
+    // Auto-repair: add current user as participant (upsert to avoid conflicts)
+    console.log('[sendMessage] Auto-repairing: adding self as participant...');
+    const { error: repairErr } = await supabase
+      .from('conversation_participants')
+      .upsert(
+        { conversation_id: conversationId, user_id: user.id },
+        { onConflict: 'conversation_id,user_id' }
+      );
+
+    if (repairErr) {
+      console.error('[sendMessage] Auto-repair failed:', repairErr.message);
+      return null;
+    }
+
+    // Retry insert after repair
+    const retry = await tryInsert();
+    data = retry.data;
+    error = retry.error;
+
+    if (error) {
+      console.error('[sendMessage] Retry after repair still failed:', error.code, error.message, error.details);
+      return null;
+    }
+
+    console.log('[sendMessage] Auto-repair succeeded, message sent!');
+  }
+
+  if (!data) return null;
 
   // Update conversation timestamp
   await supabase

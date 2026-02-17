@@ -116,7 +116,7 @@ export const KanbanBoard = ({ tasks }: KanbanBoardProps) => {
 
               {/* Column body */}
               <div
-                className={`flex-1 ${colors.bg} border ${colors.border} rounded-b-2xl p-3 space-y-2.5 min-h-[200px]`}
+                className={`flex-1 ${colors.bg} border ${colors.border} rounded-b-2xl p-3 space-y-2.5 min-h-50`}
               >
                 <SortableContext
                   items={column.tasks.map((t) => t.id)}

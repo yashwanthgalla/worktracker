@@ -1,4 +1,4 @@
-import type { Task, AISuggestion } from '../types/database.types';
+import type { Task, AISuggestion, Json } from '../types/database.types';
 import { supabase } from '../lib/supabase';
 import { differenceInDays } from 'date-fns';
 
@@ -228,7 +228,7 @@ export async function getWeeklySuggestions(tasks: Task[]): Promise<string[]> {
 export async function saveSuggestion(
   taskId: string,
   suggestionType: string,
-  content: any
+  content: Json
 ): Promise<AISuggestion> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
@@ -248,6 +248,7 @@ export async function saveSuggestion(
   if (error) throw error;
   return {
     ...data,
+    content: data.content as Record<string, unknown>,
     created_at: new Date(data.created_at),
   };
 }

@@ -73,15 +73,15 @@ export const TaskCard = ({ task, onClick }: TaskCardProps) => {
             <h3
               className={`font-medium text-[0.9375rem] mb-1.5 ${
                 task.status === 'completed'
-                  ? 'line-through text-[#86868b]'
-                  : 'text-[#1d1d1f]'
+                  ? 'line-through text-text-tertiary'
+                  : 'text-text-primary'
               }`}
             >
               {task.title}
             </h3>
 
             {task.description && (
-              <p className="text-[0.8125rem] text-[#86868b] line-clamp-2 mb-3">
+              <p className="text-[0.8125rem] text-text-tertiary line-clamp-2 mb-3">
                 {task.description}
               </p>
             )}
@@ -113,7 +113,7 @@ export const TaskCard = ({ task, onClick }: TaskCardProps) => {
                   className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
                     isOverdue(task)
                       ? 'text-red-600 bg-red-50'
-                      : 'text-[#6e6e73] bg-black/[0.04]'
+                      : 'text-text-secondary bg-black/4'
                   }`}
                 >
                   <Calendar className="w-3 h-3" />
@@ -124,7 +124,7 @@ export const TaskCard = ({ task, onClick }: TaskCardProps) => {
 
               {/* Estimated time */}
               {task.estimated_time && (
-                <div className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[#6e6e73] bg-black/[0.04] font-medium">
+                <div className="flex items-center gap-1 px-2 py-0.5 rounded-full text-text-secondary bg-black/4 font-medium">
                   <Clock className="w-3 h-3" />
                   <span>{task.estimated_time}m</span>
                 </div>
@@ -155,16 +155,16 @@ export const TaskCard = ({ task, onClick }: TaskCardProps) => {
                 e.stopPropagation();
                 setShowMenu(!showMenu);
               }}
-              className="p-1.5 rounded-lg hover:bg-black/[0.04] transition-colors opacity-0 group-hover:opacity-100"
+              className="p-1.5 rounded-lg hover:bg-black/4 transition-colors opacity-0 group-hover:opacity-100"
             >
-              <MoreVertical className="w-4 h-4 text-[#86868b]" />
+              <MoreVertical className="w-4 h-4 text-text-tertiary" />
             </motion.button>
 
             {showMenu && (
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: -4 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                className="absolute right-0 top-full mt-1 bg-white rounded-xl overflow-hidden shadow-xl border border-black/[0.06] z-20 min-w-[140px]"
+                className="absolute right-0 top-full mt-1 bg-white rounded-xl overflow-hidden shadow-xl border border-black/6 z-20 min-w-35"
               >
                 <button
                   onClick={(e) => {
@@ -172,7 +172,7 @@ export const TaskCard = ({ task, onClick }: TaskCardProps) => {
                     onClick?.();
                     setShowMenu(false);
                   }}
-                  className="w-full px-4 py-2.5 text-left text-[0.875rem] text-[#1d1d1f] hover:bg-black/[0.03] transition-colors"
+                  className="w-full px-4 py-2.5 text-left text-[0.875rem] text-text-primary hover:bg-black/3 transition-colors"
                 >
                   Edit
                 </button>

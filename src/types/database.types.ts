@@ -274,6 +274,9 @@ export interface Database {
           avatar_url: string | null
           status: 'online' | 'offline' | 'away' | 'busy'
           last_seen: string
+          is_private: boolean
+          bio: string | null
+          username: string | null
           created_at: string
           updated_at: string
         }
@@ -284,6 +287,9 @@ export interface Database {
           avatar_url?: string | null
           status?: 'online' | 'offline' | 'away' | 'busy'
           last_seen?: string
+          is_private?: boolean
+          bio?: string | null
+          username?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -294,6 +300,9 @@ export interface Database {
           avatar_url?: string | null
           status?: 'online' | 'offline' | 'away' | 'busy'
           last_seen?: string
+          is_private?: boolean
+          bio?: string | null
+          username?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -462,7 +471,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
-          type: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted'
+          type: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted' | 'follow_request' | 'follow_accepted' | 'new_follower' | 'refollow'
           title: string
           body: string | null
           data: Json | null
@@ -472,7 +481,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
-          type: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted'
+          type: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted' | 'follow_request' | 'follow_accepted' | 'new_follower' | 'refollow'
           title: string
           body?: string | null
           data?: Json | null
@@ -482,11 +491,116 @@ export interface Database {
         Update: {
           id?: string
           user_id?: string
-          type?: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted'
+          type?: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted' | 'follow_request' | 'follow_accepted' | 'new_follower' | 'refollow'
           title?: string
           body?: string | null
           data?: Json | null
           read?: boolean
+          created_at?: string
+        }
+        Relationships: []
+      }
+      follows: {
+        Row: {
+          id: string
+          follower_id: string
+          following_id: string
+          status: 'requested' | 'accepted' | 'rejected'
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          follower_id: string
+          following_id: string
+          status?: 'requested' | 'accepted' | 'rejected'
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          follower_id?: string
+          following_id?: string
+          status?: 'requested' | 'accepted' | 'rejected'
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "follows_follower_id_fkey"
+            columns: ["follower_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "follows_following_id_fkey"
+            columns: ["following_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      user_blocks: {
+        Row: {
+          id: string
+          blocker_id: string
+          blocked_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          blocker_id: string
+          blocked_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          blocker_id?: string
+          blocked_id?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_blocks_blocker_id_fkey"
+            columns: ["blocker_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "user_blocks_blocked_id_fkey"
+            columns: ["blocked_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      follow_history: {
+        Row: {
+          id: string
+          follower_id: string
+          following_id: string
+          action: 'follow' | 'unfollow' | 'accept' | 'reject' | 'cancel' | 'block' | 'unblock' | 'remove_follower'
+          metadata: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          follower_id: string
+          following_id: string
+          action: 'follow' | 'unfollow' | 'accept' | 'reject' | 'cancel' | 'block' | 'unblock' | 'remove_follower'
+          metadata?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          follower_id?: string
+          following_id?: string
+          action?: 'follow' | 'unfollow' | 'accept' | 'reject' | 'cancel' | 'block' | 'unblock' | 'remove_follower'
+          metadata?: Json | null
           created_at?: string
         }
         Relationships: []
@@ -598,7 +712,7 @@ export interface ActivityLog {
   user_id: string;
   task_id: string;
   action: string;
-  details?: any;
+  details?: Record<string, unknown>;
   created_at: Date;
   task?: Task;
 }
@@ -608,7 +722,7 @@ export interface AISuggestion {
   user_id: string;
   task_id: string;
   suggestion_type: string;
-  content: any;
+  content: Record<string, unknown>;
   applied: boolean;
   created_at: Date;
 }
@@ -675,10 +789,13 @@ export interface OnboardingStep {
 export interface UserProfile {
   id: string;
   email: string;
+  username: string | null;
   full_name: string | null;
   avatar_url: string | null;
   status: 'online' | 'offline' | 'away' | 'busy';
   last_seen: string;
+  is_private: boolean;
+  bio: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -724,7 +841,7 @@ export interface Message {
   sender_id: string;
   content: string;
   message_type: 'text' | 'image' | 'file' | 'system';
-  metadata: any;
+  metadata: Record<string, unknown>;
   is_edited: boolean;
   created_at: string;
   updated_at: string;
@@ -735,10 +852,56 @@ export interface Message {
 export interface RealtimeNotification {
   id: string;
   user_id: string;
-  type: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted';
+  type: 'friend_request' | 'message' | 'task_reminder' | 'task_due' | 'task_completed' | 'friend_accepted' | 'follow_request' | 'follow_accepted' | 'new_follower' | 'refollow';
   title: string;
   body: string | null;
-  data: any;
+  data: Record<string, unknown>;
   read: boolean;
   created_at: string;
+}
+
+// ─── Follow System Types ───
+
+export type FollowStatus = 'requested' | 'accepted' | 'rejected';
+
+export type FollowRelationship = 'none' | 'requested' | 'following' | 'follower' | 'mutual' | 'blocked';
+
+export interface Follow {
+  id: string;
+  follower_id: string;
+  following_id: string;
+  status: FollowStatus;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  follower?: UserProfile;
+  following?: UserProfile;
+}
+
+export interface UserBlock {
+  id: string;
+  blocker_id: string;
+  blocked_id: string;
+  created_at: string;
+}
+
+export interface FollowHistory {
+  id: string;
+  follower_id: string;
+  following_id: string;
+  action: 'follow' | 'unfollow' | 'accept' | 'reject' | 'cancel' | 'block' | 'unblock' | 'remove_follower';
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface FollowCounts {
+  followers: number;
+  following: number;
+}
+
+export interface UserProfileWithFollowState extends UserProfile {
+  followRelationship: FollowRelationship;
+  followId?: string;
+  isBlocked?: boolean;
+  isMutual?: boolean;
 }

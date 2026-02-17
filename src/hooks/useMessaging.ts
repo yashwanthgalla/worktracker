@@ -160,11 +160,16 @@ export function useConversations() {
     };
   }, [user, refresh]);
 
-  const startDirectChat = useCallback(async (otherUserId: string) => {
+  const startDirectChat = useCallback(async (otherUserId: string): Promise<Conversation | null> => {
     const conv = await MessageService.getOrCreateDirectConversation(otherUserId);
-    if (conv) await refresh();
-    return conv;
-  }, [refresh]);
+    if (!conv) return null;
+    // Refresh the list to get enriched conversations (with participants, last_message etc.)
+    const enrichedList = await MessageService.getConversations();
+    setConversations(enrichedList);
+    // Find the enriched version of the conversation we just created/found
+    const enriched = enrichedList.find(c => c.id === conv.id);
+    return enriched || conv;
+  }, []);
 
   return { conversations, loading, refresh, startDirectChat };
 }
@@ -265,11 +270,46 @@ export function useMessages(conversationId: string | null) {
   }, [conversationId, user]);
 
   const send = useCallback(
-    async (content: string) => {
-      if (!conversationId || !content.trim()) return null;
-      return MessageService.sendMessage(conversationId, content.trim());
+    async (content: string): Promise<Message | null> => {
+      if (!conversationId || !content.trim() || !user) return null;
+
+      // Create optimistic message so it appears immediately
+      const optimisticId = `optimistic-${Date.now()}`;
+      const optimisticMsg: Message = {
+        id: optimisticId,
+        conversation_id: conversationId,
+        sender_id: user.id,
+        content: content.trim(),
+        message_type: 'text',
+        is_edited: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        sender: {
+          id: user.id,
+          email: user.email || '',
+          full_name: user.user_metadata?.full_name || null,
+          username: user.user_metadata?.username || null,
+        },
+      } as Message;
+
+      // Add optimistic message to state
+      setMessages((prev) => [...prev, optimisticMsg]);
+
+      const result = await MessageService.sendMessage(conversationId, content.trim());
+
+      if (result) {
+        // Replace optimistic message with real one
+        setMessages((prev) =>
+          prev.map((m) => (m.id === optimisticId ? result : m))
+        );
+      } else {
+        // Remove optimistic message on failure
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      }
+
+      return result;
     },
-    [conversationId]
+    [conversationId, user]
   );
 
   return { messages, loading, send, refresh: loadMessages };

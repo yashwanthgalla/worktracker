@@ -75,7 +75,7 @@
     text-rendering: optimizeLegibility;
   }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+    font-family: 'SF Pro Display', 'SF Pro Icons', 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
     background-color: var(--color-surface-secondary);
     color: var(--color-text-primary);
     margin: 0;

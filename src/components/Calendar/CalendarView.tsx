@@ -49,26 +49,6 @@ export const CalendarView = () => {
     [allTasks]
   );
 
-  // Dates that have tasks (for calendar dot indicators)
-  const taskDates = useMemo(() => {
-    const dates = new Map<string, { count: number; hasOverdue: boolean; hasCompleted: boolean }>();
-    allTasks.forEach((task) => {
-      if (task.due_date) {
-        const key = format(new Date(task.due_date), 'yyyy-MM-dd');
-        const existing = dates.get(key) || { count: 0, hasOverdue: false, hasCompleted: false };
-        existing.count++;
-        if (task.status === 'completed') existing.hasCompleted = true;
-        if (
-          task.status !== 'completed' &&
-          isBefore(new Date(task.due_date), startOfDay(new Date()))
-        )
-          existing.hasOverdue = true;
-        dates.set(key, existing);
-      }
-    });
-    return dates;
-  }, [allTasks]);
-
   // Summary stats
   const stats = useMemo(() => {
     const today = startOfDay(new Date());
@@ -91,7 +71,7 @@ export const CalendarView = () => {
         <motion.h1
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="text-[1.75rem] font-semibold tracking-tight text-[#1d1d1f] mb-1 flex items-center gap-3"
+          className="text-[1.75rem] font-semibold tracking-tight text-text-primary mb-1 flex items-center gap-3"
         >
           <div className="p-2.5 rounded-2xl bg-primary-50 border border-primary-100">
             <CalendarIcon className="w-6 h-6 text-primary-500" />
@@ -102,7 +82,7 @@ export const CalendarView = () => {
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.05 }}
-          className="text-[0.9375rem] text-[#86868b] ml-14"
+          className="text-[0.9375rem] text-text-tertiary ml-14"
         >
           View and manage your tasks by date
         </motion.p>
@@ -146,10 +126,10 @@ export const CalendarView = () => {
         >
           {/* Selected Date Header */}
           <div className="glass-card p-6">
-            <h2 className="text-lg font-semibold text-[#1d1d1f] mb-1">
+            <h2 className="text-lg font-semibold text-text-primary mb-1">
               {selectedDate ? format(selectedDate, 'EEEE, MMMM d, yyyy') : 'Select a date'}
             </h2>
-            <p className="text-[0.8125rem] text-[#86868b]">
+            <p className="text-[0.8125rem] text-text-tertiary">
               {selectedDateTasks.length === 0
                 ? 'No tasks scheduled for this date'
                 : `${selectedDateTasks.length} task${selectedDateTasks.length !== 1 ? 's' : ''} scheduled`}
@@ -173,10 +153,10 @@ export const CalendarView = () => {
                 <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-primary-50 flex items-center justify-center">
                   <CalendarIcon className="w-7 h-7 text-primary-400" />
                 </div>
-                <h3 className="text-[0.9375rem] font-semibold text-[#1d1d1f] mb-1">
+                <h3 className="text-[0.9375rem] font-semibold text-text-primary mb-1">
                   No tasks on this date
                 </h3>
-                <p className="text-[0.8125rem] text-[#86868b]">
+                <p className="text-[0.8125rem] text-text-tertiary">
                   Select a different date or create a new task
                 </p>
               </motion.div>
@@ -186,7 +166,7 @@ export const CalendarView = () => {
           {/* Undated Tasks */}
           {undatedTasks.length > 0 && (
             <div>
-              <h3 className="text-[0.875rem] font-semibold text-[#86868b] uppercase tracking-wider mb-3">
+              <h3 className="text-[0.875rem] font-semibold text-text-tertiary uppercase tracking-wider mb-3">
                 Unscheduled Tasks
               </h3>
               <div className="space-y-2">
@@ -194,7 +174,7 @@ export const CalendarView = () => {
                   <TaskRow key={task.id} task={task} index={index} compact />
                 ))}
                 {undatedTasks.length > 5 && (
-                  <p className="text-[0.8125rem] text-[#86868b] pl-4">
+                  <p className="text-[0.8125rem] text-text-tertiary pl-4">
                     +{undatedTasks.length - 5} more unscheduled tasks
                   </p>
                 )}
@@ -229,7 +209,7 @@ export const CalendarView = () => {
 
           {/* Legend */}
           <div className="glass-card p-5 space-y-3">
-            <h4 className="text-[0.8125rem] font-semibold text-[#1d1d1f] mb-2">Legend</h4>
+            <h4 className="text-[0.8125rem] font-semibold text-text-primary mb-2">Legend</h4>
             <div className="space-y-2.5">
               {[
                 { label: 'Urgent', ...priorityConfig.urgent },
@@ -239,7 +219,7 @@ export const CalendarView = () => {
               ].map((item) => (
                 <div key={item.label} className="flex items-center gap-2.5">
                   <div className={`w-2.5 h-2.5 rounded-full ${item.bg} border ${item.border}`} />
-                  <span className="text-[0.8125rem] text-[#6e6e73]">{item.label} Priority</span>
+                  <span className="text-[0.8125rem] text-text-secondary">{item.label} Priority</span>
                 </div>
               ))}
             </div>
@@ -285,14 +265,14 @@ function TaskRow({
       {/* Content */}
       <div className="flex-1 min-w-0">
         <h4
-          className={`font-medium text-[#1d1d1f] truncate ${
+          className={`font-medium text-text-primary truncate ${
             compact ? 'text-[0.875rem]' : 'text-[0.9375rem]'
           } ${task.status === 'completed' ? 'line-through opacity-60' : ''}`}
         >
           {task.title}
         </h4>
         {!compact && task.description && (
-          <p className="text-[0.8125rem] text-[#86868b] truncate mt-0.5">
+          <p className="text-[0.8125rem] text-text-tertiary truncate mt-0.5">
             {task.description}
           </p>
         )}
@@ -309,13 +289,13 @@ function TaskRow({
             </span>
           )}
           {task.estimated_time && (
-            <span className="inline-flex items-center gap-1 text-[0.75rem] text-[#86868b]">
+            <span className="inline-flex items-center gap-1 text-[0.75rem] text-text-tertiary">
               <Clock className="w-3 h-3" />
               {task.estimated_time}m
             </span>
           )}
           {task.category && (
-            <span className="text-[0.75rem] text-[#86868b]">
+            <span className="text-[0.75rem] text-text-tertiary">
               {task.category}
             </span>
           )}

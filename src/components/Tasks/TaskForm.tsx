@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { X, Loader2, Calendar, Flag, Tag, Clock } from 'lucide-react';
 import { useCreateTask, useUpdateTask, useTask } from '../../hooks/useTasks';
@@ -14,6 +14,24 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
   const createTask = useCreateTask();
   const updateTask = useUpdateTask();
 
+  const formDataFromTask = useMemo(() => {
+    if (existingTask) {
+      return {
+        title: existingTask.title,
+        description: existingTask.description || '',
+        priority: existingTask.priority,
+        status: existingTask.status,
+        due_date: existingTask.due_date
+          ? new Date(existingTask.due_date).toISOString().split('T')[0]
+          : '',
+        estimated_time: existingTask.estimated_time?.toString() || '',
+        category: existingTask.category || '',
+        tags: existingTask.tags?.join(', ') || '',
+      };
+    }
+    return null;
+  }, [existingTask]);
+
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -25,22 +43,12 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
     tags: '',
   });
 
-  useEffect(() => {
-    if (existingTask) {
-      setFormData({
-        title: existingTask.title,
-        description: existingTask.description || '',
-        priority: existingTask.priority,
-        status: existingTask.status,
-        due_date: existingTask.due_date
-          ? new Date(existingTask.due_date).toISOString().split('T')[0]
-          : '',
-        estimated_time: existingTask.estimated_time?.toString() || '',
-        category: existingTask.category || '',
-        tags: existingTask.tags?.join(', ') || '',
-      });
-    }
-  }, [existingTask]);
+  // Sync form data when task loads - track last synced task ID
+  const [syncedTaskId, setSyncedTaskId] = useState<string | undefined>();
+  if (existingTask && syncedTaskId !== existingTask.id && formDataFromTask) {
+    setSyncedTaskId(existingTask.id);
+    setFormData(formDataFromTask);
+  }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,7 +74,7 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
         onSuccess: () => onClose(),
       });
     } else {
-      createTask.mutate(taskData as any, {
+      createTask.mutate(taskData as Parameters<typeof createTask.mutate>[0], {
         onSuccess: () => onClose(),
       });
     }
@@ -90,16 +98,16 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
       >
         {/* Header */}
         <div className="flex items-center justify-between mb-7">
-          <h2 className="text-xl font-semibold text-[#1d1d1f]">
+          <h2 className="text-xl font-semibold text-text-primary">
             {isEdit ? 'Edit Task' : 'Create New Task'}
           </h2>
           <motion.button
             whileHover={{ scale: 1.1, rotate: 90 }}
             whileTap={{ scale: 0.9 }}
             onClick={onClose}
-            className="p-2 rounded-xl hover:bg-black/[0.04] transition-colors"
+            className="p-2 rounded-xl hover:bg-black/4 transition-colors"
           >
-            <X className="w-5 h-5 text-[#86868b]" />
+            <X className="w-5 h-5 text-text-tertiary" />
           </motion.button>
         </div>
 
@@ -107,7 +115,7 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
         <form onSubmit={handleSubmit} className="space-y-5">
           {/* Title */}
           <div>
-            <label className="block text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5">
+            <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">
               Title <span className="text-red-400">*</span>
             </label>
             <input
@@ -124,7 +132,7 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
 
           {/* Description */}
           <div>
-            <label className="block text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5">Description</label>
+            <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">Description</label>
             <textarea
               value={formData.description}
               onChange={(e) =>
@@ -140,8 +148,8 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Priority */}
             <div>
-              <label className="text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5 flex items-center gap-1.5">
-                <Flag className="w-3.5 h-3.5 text-[#86868b]" />
+              <label className="text-[0.8125rem] font-medium text-text-primary mb-1.5 flex items-center gap-1.5">
+                <Flag className="w-3.5 h-3.5 text-text-tertiary" />
                 Priority
               </label>
               <select
@@ -149,7 +157,7 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
                 onChange={(e) =>
                   setFormData({
                     ...formData,
-                    priority: e.target.value as any,
+                    priority: e.target.value as 'low' | 'medium' | 'high' | 'urgent',
                   })
                 }
                 className="input-field"
@@ -163,13 +171,13 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
 
             {/* Status */}
             <div>
-              <label className="block text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5">Status</label>
+              <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">Status</label>
               <select
                 value={formData.status}
                 onChange={(e) =>
                   setFormData({
                     ...formData,
-                    status: e.target.value as any,
+                    status: e.target.value as 'pending' | 'in_progress' | 'completed',
                   })
                 }
                 className="input-field"
@@ -182,8 +190,8 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
 
             {/* Due Date */}
             <div>
-              <label className="text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-[#86868b]" />
+              <label className="text-[0.8125rem] font-medium text-text-primary mb-1.5 flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-text-tertiary" />
                 Due Date
               </label>
               <input
@@ -198,8 +206,8 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
 
             {/* Estimated Time */}
             <div>
-              <label className="text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5 flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-[#86868b]" />
+              <label className="text-[0.8125rem] font-medium text-text-primary mb-1.5 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-text-tertiary" />
                 Estimated Time (min)
               </label>
               <input
@@ -216,7 +224,7 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
 
             {/* Category */}
             <div>
-              <label className="block text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5">Category</label>
+              <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">Category</label>
               <input
                 type="text"
                 value={formData.category}
@@ -230,8 +238,8 @@ export const TaskForm = ({ onClose, taskId }: TaskFormProps) => {
 
             {/* Tags */}
             <div>
-              <label className="text-[0.8125rem] font-medium text-[#1d1d1f] mb-1.5 flex items-center gap-1.5">
-                <Tag className="w-3.5 h-3.5 text-[#86868b]" />
+              <label className="text-[0.8125rem] font-medium text-text-primary mb-1.5 flex items-center gap-1.5">
+                <Tag className="w-3.5 h-3.5 text-text-tertiary" />
                 Tags
               </label>
               <input

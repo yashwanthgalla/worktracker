@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
 /**
  * Custom hook that tracks scroll progress of a container or viewport.
@@ -103,16 +103,13 @@ export function useRealTimeClock(intervalMs = 1000) {
 /**
  * Live productivity score hook — computes score from tasks/sessions
  */
-export function useProductivityScore(tasks: any[] | undefined, sessions: any[] | undefined) {
-  const [score, setScore] = useState(0);
-  const [trend, setTrend] = useState<'up' | 'down' | 'stable'>('stable');
-
-  useEffect(() => {
-    if (!tasks) return;
+export function useProductivityScore(tasks: Record<string, unknown>[] | undefined, sessions: Record<string, unknown>[] | undefined) {
+  const result = useMemo(() => {
+    if (!tasks) return { score: 0, trend: 'stable' as const };
     const total = tasks.length || 1;
-    const completed = tasks.filter((t: any) => t.status === 'completed').length;
-    const inProgress = tasks.filter((t: any) => t.status === 'in_progress').length;
-    const focusMinutes = sessions?.reduce((sum: number, s: any) => sum + (s.duration || 0), 0) || 0;
+    const completed = tasks.filter((t: Record<string, unknown>) => t.status === 'completed').length;
+    const inProgress = tasks.filter((t: Record<string, unknown>) => t.status === 'in_progress').length;
+    const focusMinutes = sessions?.reduce((sum: number, s: Record<string, unknown>) => sum + ((s.duration as number) || 0), 0) || 0;
 
     // Score formula: completion weight + activity weight + focus weight
     const completionScore = (completed / total) * 40;
@@ -120,9 +117,11 @@ export function useProductivityScore(tasks: any[] | undefined, sessions: any[] |
     const focusScore = Math.min((focusMinutes / 3600) * 30, 30); // max 30 for 1hr focus
     const newScore = Math.round(completionScore + activityScore + focusScore);
 
-    setTrend(newScore > score ? 'up' : newScore < score ? 'down' : 'stable');
-    setScore(newScore);
+    // Derive trend from score thresholds rather than previous state
+    const trend: 'up' | 'down' | 'stable' = newScore >= 60 ? 'up' : newScore <= 20 ? 'down' : 'stable';
+
+    return { score: newScore, trend };
   }, [tasks, sessions]);
 
-  return { score, trend };
+  return result;
 }

@@ -34,7 +34,7 @@ export const useStartSession = () => {
       setCurrentSession(session);
       toast.success('Focus session started!');
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       toast.error(error.message || 'Failed to start session');
     },
   });
@@ -57,7 +57,7 @@ export const useEndSession = () => {
       queryClient.invalidateQueries({ queryKey: ['workSessions'] });
       toast.success('Session completed!');
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       toast.error(error.message || 'Failed to end session');
     },
   });

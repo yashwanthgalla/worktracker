@@ -27,7 +27,7 @@ export const SubtaskList = ({ parentTask }: SubtaskListProps) => {
         user_id: parentTask.user_id,
         created_at: new Date(),
         updated_at: new Date(),
-      } as any,
+      } as Parameters<typeof createTask.mutate>[0],
       {
         onSuccess: () => {
           setNewSubtask('');

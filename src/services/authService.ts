@@ -1,18 +1,32 @@
 import { supabase } from '../lib/supabase';
 
 // Sign up with email and password
-export async function signUp(email: string, password: string, fullName?: string) {
+export async function signUp(email: string, password: string, fullName?: string, username?: string) {
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
       data: {
         full_name: fullName,
+        username: username,
       },
     },
   });
 
   if (error) throw error;
+
+  // Also upsert user_profiles to set username immediately
+  if (data.user && username) {
+    await supabase.from('user_profiles').upsert({
+      id: data.user.id,
+      email,
+      full_name: fullName || email.split('@')[0],
+      username,
+      status: 'online',
+      last_seen: new Date().toISOString(),
+    });
+  }
+
   return data;
 }
 
@@ -66,7 +80,7 @@ export async function updatePassword(newPassword: string) {
 }
 
 // Update user profile
-export async function updateProfile(updates: { full_name?: string; avatar_url?: string }) {
+export async function updateProfile(updates: Record<string, unknown>) {
   const { error } = await supabase.auth.updateUser({
     data: updates,
   });
@@ -75,7 +89,7 @@ export async function updateProfile(updates: { full_name?: string; avatar_url?: 
 }
 
 // Listen to auth state changes
-export function onAuthStateChange(callback: (user: any) => void) {
+export function onAuthStateChange(callback: (user: unknown) => void) {
   const { data: { subscription } } = supabase.auth.onAuthStateChange(
     (_event, session) => {
       callback(session?.user || null);

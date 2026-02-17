@@ -187,6 +187,104 @@ CREATE TRIGGER update_tasks_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+-- ═══════════════════════════════════════════════════════
+-- Follow System Tables (Instagram-style)
+-- ═══════════════════════════════════════════════════════
+
+-- Add is_private and bio to user_profiles (if table exists from previous migrations)
+DO $$ BEGIN
+  ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS is_private BOOLEAN DEFAULT false;
+  ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS bio TEXT;
+EXCEPTION WHEN undefined_table THEN
+  NULL; -- user_profiles may not exist yet if migration 005 not applied
+END $$;
+
+-- Follows Table (one-directional follow relationship)
+CREATE TABLE IF NOT EXISTS follows (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  follower_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  following_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  status TEXT CHECK (status IN ('requested', 'accepted', 'rejected')) DEFAULT 'requested',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(follower_id, following_id),
+  CHECK (follower_id != following_id)
+);
+
+-- User Blocks Table
+CREATE TABLE IF NOT EXISTS user_blocks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  blocker_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  blocked_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(blocker_id, blocked_id),
+  CHECK (blocker_id != blocked_id)
+);
+
+-- Follow History (audit log)
+CREATE TABLE IF NOT EXISTS follow_history (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  follower_id UUID NOT NULL,
+  following_id UUID NOT NULL,
+  action TEXT CHECK (action IN ('follow', 'unfollow', 'accept', 'reject', 'cancel', 'block', 'unblock', 'remove_follower')) NOT NULL,
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable RLS
+ALTER TABLE follows ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_blocks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE follow_history ENABLE ROW LEVEL SECURITY;
+
+-- Follows RLS Policies
+DROP POLICY IF EXISTS "Users see own follows" ON follows;
+CREATE POLICY "Users see own follows" ON follows
+  FOR SELECT USING (auth.uid() = follower_id OR auth.uid() = following_id);
+DROP POLICY IF EXISTS "Users can follow" ON follows;
+CREATE POLICY "Users can follow" ON follows
+  FOR INSERT WITH CHECK (auth.uid() = follower_id);
+DROP POLICY IF EXISTS "Users can update own follows" ON follows;
+CREATE POLICY "Users can update own follows" ON follows
+  FOR UPDATE USING (auth.uid() = follower_id OR auth.uid() = following_id);
+DROP POLICY IF EXISTS "Users can delete own follows" ON follows;
+CREATE POLICY "Users can delete own follows" ON follows
+  FOR DELETE USING (auth.uid() = follower_id OR auth.uid() = following_id);
+
+-- Blocks RLS Policies
+DROP POLICY IF EXISTS "Users see own blocks" ON user_blocks;
+CREATE POLICY "Users see own blocks" ON user_blocks
+  FOR SELECT USING (auth.uid() = blocker_id OR auth.uid() = blocked_id);
+DROP POLICY IF EXISTS "Users can block" ON user_blocks;
+CREATE POLICY "Users can block" ON user_blocks
+  FOR INSERT WITH CHECK (auth.uid() = blocker_id);
+DROP POLICY IF EXISTS "Users can unblock" ON user_blocks;
+CREATE POLICY "Users can unblock" ON user_blocks
+  FOR DELETE USING (auth.uid() = blocker_id);
+
+-- Follow History RLS Policies
+DROP POLICY IF EXISTS "Users see own follow history" ON follow_history;
+CREATE POLICY "Users see own follow history" ON follow_history
+  FOR SELECT USING (auth.uid() = follower_id OR auth.uid() = following_id);
+DROP POLICY IF EXISTS "Anyone can insert follow history" ON follow_history;
+CREATE POLICY "Anyone can insert follow history" ON follow_history
+  FOR INSERT WITH CHECK (true);
+
+-- Follow System Indexes
+CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id);
+CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
+CREATE INDEX IF NOT EXISTS idx_follows_status ON follows(status);
+CREATE INDEX IF NOT EXISTS idx_follows_composite ON follows(follower_id, following_id, status);
+CREATE INDEX IF NOT EXISTS idx_follows_following_status ON follows(following_id, status);
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocker ON user_blocks(blocker_id);
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id);
+CREATE INDEX IF NOT EXISTS idx_user_blocks_composite ON user_blocks(blocker_id, blocked_id);
+CREATE INDEX IF NOT EXISTS idx_follow_history_users ON follow_history(follower_id, following_id);
+CREATE INDEX IF NOT EXISTS idx_follow_history_created ON follow_history(created_at DESC);
+
+-- Add follows to realtime publication
+ALTER PUBLICATION supabase_realtime ADD TABLE follows;
+ALTER PUBLICATION supabase_realtime ADD TABLE user_blocks;
+
 -- Success message
 DO $$
 BEGIN

@@ -32,7 +32,7 @@ export const useCreateTask = () => {
       addTask(newTask);
       toast.success('Task created successfully!');
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       toast.error(error.message || 'Failed to create task');
     },
   });
@@ -56,7 +56,7 @@ export const useUpdateTask = () => {
         NotificationService.sendTaskCompletedNotification(updatedTask, allTasks).catch(console.warn);
       }
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       toast.error(error.message || 'Failed to update task');
     },
   });
@@ -73,7 +73,7 @@ export const useDeleteTask = () => {
       deleteTask(deletedId);
       toast.success('Task deleted!');
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       toast.error(error.message || 'Failed to delete task');
     },
   });

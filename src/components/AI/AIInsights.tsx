@@ -9,7 +9,7 @@ export const AIInsights = () => {
   const [loading, setLoading] = useState(false);
   const [insights, setInsights] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [dailyPlan, setDailyPlan] = useState<any[]>([]);
+  const [dailyPlan, setDailyPlan] = useState<{ id: string; title: string; priority: string; estimated_time?: number }[]>([]);
 
   const generateInsights = async () => {
     if (!tasks || !Array.isArray(tasks)) return;
@@ -35,13 +35,13 @@ export const AIInsights = () => {
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-[1.75rem] font-semibold tracking-tight text-[#1d1d1f] mb-1 flex items-center gap-3">
+          <h1 className="text-[1.75rem] font-semibold tracking-tight text-text-primary mb-1 flex items-center gap-3">
             <div className="p-2.5 rounded-2xl bg-amber-50 border border-amber-100">
               <Sparkles className="w-6 h-6 text-amber-500" />
             </div>
             AI Insights
           </h1>
-          <p className="text-[#86868b] text-[0.9375rem] ml-14">
+          <p className="text-text-tertiary text-[0.9375rem] ml-14">
             Get intelligent recommendations powered by AI
           </p>
         </div>
@@ -73,11 +73,11 @@ export const AIInsights = () => {
           animate={{ opacity: 1, y: 0 }}
           className="glass-card p-6"
         >
-          <h3 className="text-[1.0625rem] font-semibold text-[#1d1d1f] mb-2 flex items-center gap-2">
+          <h3 className="text-[1.0625rem] font-semibold text-text-primary mb-2 flex items-center gap-2">
             <TrendingUp className="w-4.5 h-4.5 text-rose-500" />
             AI-Generated Daily Plan
           </h3>
-          <p className="text-[#86868b] text-[0.8125rem] mb-5">
+          <p className="text-text-tertiary text-[0.8125rem] mb-5">
             Optimized task sequence based on priority, deadlines, and estimated time
           </p>
           <div className="space-y-2.5">
@@ -87,15 +87,15 @@ export const AIInsights = () => {
                 initial={{ opacity: 0, x: -12 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: index * 0.08 }}
-                className="rounded-2xl p-4 flex items-center gap-4 bg-black/[0.02] border border-black/[0.04]"
+                className="rounded-2xl p-4 flex items-center gap-4 bg-black/2 border border-black/4"
               >
-                <div className="w-9 h-9 rounded-full bg-[#1d1d1f] text-white flex items-center justify-center text-[0.8125rem] font-semibold">
+                <div className="w-9 h-9 rounded-full bg-text-primary text-white flex items-center justify-center text-[0.8125rem] font-semibold">
                   {index + 1}
                 </div>
                 <div className="flex-1">
-                  <h4 className="text-[0.9375rem] font-medium text-[#1d1d1f] mb-0.5">{task.title}</h4>
-                  <div className="flex items-center gap-2 text-[0.75rem] text-[#86868b]">
-                    <span className="capitalize px-2 py-0.5 rounded-full bg-black/[0.04] border border-black/[0.06] text-[#6e6e73]">
+                  <h4 className="text-[0.9375rem] font-medium text-text-primary mb-0.5">{task.title}</h4>
+                  <div className="flex items-center gap-2 text-[0.75rem] text-text-tertiary">
+                    <span className="capitalize px-2 py-0.5 rounded-full bg-black/4 border border-black/6 text-text-secondary">
                       {task.priority}
                     </span>
                     {task.estimated_time && (
@@ -117,7 +117,7 @@ export const AIInsights = () => {
           transition={{ delay: 0.1 }}
           className="glass-card p-6"
         >
-          <h3 className="text-[1.0625rem] font-semibold text-[#1d1d1f] mb-4 flex items-center gap-2">
+          <h3 className="text-[1.0625rem] font-semibold text-text-primary mb-4 flex items-center gap-2">
             <Lightbulb className="w-4.5 h-4.5 text-amber-500" />
             Weekly Improvement Suggestions
           </h3>
@@ -128,10 +128,10 @@ export const AIInsights = () => {
                 initial={{ opacity: 0, x: -12 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: index * 0.08 }}
-                className="rounded-2xl p-4 flex items-start gap-3 bg-black/[0.02] border border-black/[0.04]"
+                className="rounded-2xl p-4 flex items-start gap-3 bg-black/2 border border-black/4"
               >
                 <Sparkles className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                <p className="text-[0.875rem] text-[#6e6e73] leading-relaxed">{suggestion}</p>
+                <p className="text-[0.875rem] text-text-secondary leading-relaxed">{suggestion}</p>
               </motion.div>
             ))}
           </div>
@@ -146,7 +146,7 @@ export const AIInsights = () => {
           transition={{ delay: 0.2 }}
           className="glass-card p-6"
         >
-          <h3 className="text-[1.0625rem] font-semibold text-[#1d1d1f] mb-4 flex items-center gap-2">
+          <h3 className="text-[1.0625rem] font-semibold text-text-primary mb-4 flex items-center gap-2">
             <AlertTriangle className="w-4.5 h-4.5 text-orange-500" />
             Task Analysis & Insights
           </h3>
@@ -157,10 +157,10 @@ export const AIInsights = () => {
                 initial={{ opacity: 0, x: -12 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: index * 0.08 }}
-                className="rounded-2xl p-4 flex items-start gap-3 bg-black/[0.02] border border-black/[0.04]"
+                className="rounded-2xl p-4 flex items-start gap-3 bg-black/2 border border-black/4"
               >
                 <AlertTriangle className="w-4 h-4 text-orange-500 shrink-0 mt-0.5" />
-                <p className="text-[0.875rem] text-[#6e6e73] leading-relaxed">{insight}</p>
+                <p className="text-[0.875rem] text-text-secondary leading-relaxed">{insight}</p>
               </motion.div>
             ))}
           </div>
@@ -177,8 +177,8 @@ export const AIInsights = () => {
           <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center">
             <Sparkles className="w-8 h-8 text-amber-500" />
           </div>
-          <h3 className="text-xl font-semibold text-[#1d1d1f] mb-1.5">AI-Powered Insights</h3>
-          <p className="text-[#86868b] text-[0.9375rem] mb-6">
+          <h3 className="text-xl font-semibold text-text-primary mb-1.5">AI-Powered Insights</h3>
+          <p className="text-text-tertiary text-[0.9375rem] mb-6">
             Click the button above to generate personalized insights and recommendations
           </p>
         </motion.div>

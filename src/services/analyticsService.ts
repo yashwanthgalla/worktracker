@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+﻿import { supabase } from '../lib/supabase';
 import type { ProductivityMetrics, TaskAnalytics, ProductivityTrend } from '../types/database.types';
 import { getTasks } from './taskService';
 import { getSessions, getTodaySessions } from './workSessionService';
@@ -77,6 +77,8 @@ export async function getDailyProductivityMetrics(): Promise<ProductivityMetrics
     missed_deadlines: missedDeadlines,
     completion_rate: completionRate,
     burnout_risk,
+    streak: 0,
+    best_streak: 0,
   };
 }
 
@@ -179,7 +181,7 @@ export async function getProductivityTrends(days: number = 30): Promise<Producti
 }
 
 // Log activity
-export async function logActivity(taskId: string, action: string, details?: any) {
+export async function logActivity(taskId: string, action: string, details?: Record<string, unknown>) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('User not authenticated');
 
@@ -187,8 +189,8 @@ export async function logActivity(taskId: string, action: string, details?: any)
     user_id: user.id,
     task_id: taskId,
     action,
-    details,
-  } as any);
+    details: (details as Record<string, unknown> | undefined) || null,
+  });
 }
 
 // Re-export as namespace for backward compat

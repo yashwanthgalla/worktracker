@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  X, Loader2, Calendar, Flag, Tag, Clock, Plus, Trash2,
+  X, Loader2, Calendar, Flag, Plus, Trash2,
   Repeat, Link2, CheckSquare, ListChecks, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { useCreateTask, useUpdateTask, useTask, useTasks } from '../../hooks/useTasks';
-import type { ChecklistItem, RecurrenceRule } from '../../types/database.types';
+import type { ChecklistItem, RecurrenceRule, Task } from '../../types/database.types';
 
 interface TaskFormProps {
   onClose: () => void;
@@ -20,15 +20,31 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
   const createTask = useCreateTask();
   const updateTask = useUpdateTask();
 
+  const formDataFromTask = useMemo(() => {
+    if (existingTask) {
+      return {
+        formData: {
+          title: existingTask.title,
+          description: existingTask.description || '',
+          priority: existingTask.priority,
+          due_date: existingTask.due_date
+            ? new Date(existingTask.due_date).toISOString().split('T')[0]
+            : '',
+          is_recurring: existingTask.is_recurring,
+          parent_task_id: existingTask.parent_task_id || '',
+        },
+        recurrence: existingTask.recurrence_rule || null,
+        checklist: existingTask.checklist || null,
+      };
+    }
+    return null;
+  }, [existingTask]);
+
   const [formData, setFormData] = useState({
     title: '',
     description: '',
     priority: 'medium' as 'low' | 'medium' | 'high' | 'urgent',
-    status: 'pending' as 'pending' | 'in_progress' | 'completed',
     due_date: '',
-    estimated_time: '',
-    category: '',
-    tags: '',
     is_recurring: false,
     parent_task_id: parentTaskId || '',
   });
@@ -44,30 +60,18 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (existingTask) {
-      setFormData({
-        title: existingTask.title,
-        description: existingTask.description || '',
-        priority: existingTask.priority,
-        status: existingTask.status,
-        due_date: existingTask.due_date
-          ? new Date(existingTask.due_date).toISOString().split('T')[0]
-          : '',
-        estimated_time: existingTask.estimated_time?.toString() || '',
-        category: existingTask.category || '',
-        tags: existingTask.tags?.join(', ') || '',
-        is_recurring: existingTask.is_recurring,
-        parent_task_id: existingTask.parent_task_id || '',
-      });
-      if (existingTask.recurrence_rule) {
-        setRecurrence(existingTask.recurrence_rule);
-      }
-      if (existingTask.checklist) {
-        setChecklist(existingTask.checklist);
-      }
+  // Sync form data when task loads - track last synced task ID
+  const [syncedTaskId, setSyncedTaskId] = useState<string | undefined>();
+  if (existingTask && syncedTaskId !== existingTask.id && formDataFromTask) {
+    setSyncedTaskId(existingTask.id);
+    setFormData(formDataFromTask.formData);
+    if (formDataFromTask.recurrence) {
+      setRecurrence(formDataFromTask.recurrence);
     }
-  }, [existingTask]);
+    if (formDataFromTask.checklist) {
+      setChecklist(formDataFromTask.checklist);
+    }
+  }
 
   const handleAddCheckItem = useCallback(() => {
     if (!newCheckItem.trim()) return;
@@ -98,15 +102,12 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const taskData: any = {
+    const taskData: Partial<Task> & { is_recurring: boolean; recurrence_rule?: RecurrenceRule; checklist?: ChecklistItem[] } = {
       title: formData.title,
       description: formData.description || undefined,
       priority: formData.priority,
-      status: formData.status,
+      status: 'pending',
       due_date: formData.due_date ? new Date(formData.due_date) : undefined,
-      estimated_time: formData.estimated_time ? parseInt(formData.estimated_time) : undefined,
-      category: formData.category || undefined,
-      tags: formData.tags ? formData.tags.split(',').map((t) => t.trim()).filter(Boolean) : undefined,
       is_recurring: formData.is_recurring,
       recurrence_rule: formData.is_recurring ? recurrence : undefined,
       parent_task_id: formData.parent_task_id || undefined,
@@ -116,7 +117,7 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
     if (isEdit && taskId) {
       updateTask.mutate({ id: taskId, updates: taskData }, { onSuccess: onClose });
     } else {
-      createTask.mutate(taskData, { onSuccess: onClose });
+      createTask.mutate(taskData as Parameters<typeof createTask.mutate>[0], { onSuccess: onClose });
     }
   };
 
@@ -206,7 +207,7 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
 
           {/* Priority pills */}
           <div>
-            <label className="block text-[0.8125rem] font-medium text-gray-700 mb-2 flex items-center gap-1.5">
+            <label className="text-[0.8125rem] font-medium text-gray-700 mb-2 flex items-center gap-1.5">
               <Flag className="w-3.5 h-3.5 text-gray-400" />
               Priority
             </label>
@@ -215,7 +216,7 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
                 <button
                   key={opt.value}
                   type="button"
-                  onClick={() => setFormData({ ...formData, priority: opt.value as any })}
+                  onClick={() => setFormData({ ...formData, priority: opt.value as 'low' | 'medium' | 'high' | 'urgent' })}
                   className={`px-4 py-2 rounded-xl text-xs font-semibold border transition-all ${
                     formData.priority === opt.value
                       ? `${opt.color} ring-2 ring-offset-1 ring-current/20 scale-105`
@@ -228,77 +229,17 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
             </div>
           </div>
 
-          {/* Two columns */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Status */}
-            <div>
-              <label className="block text-[0.8125rem] font-medium text-gray-700 mb-1.5">Status</label>
-              <select
-                value={formData.status}
-                onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
-                className="input-field"
-              >
-                <option value="pending">Pending</option>
-                <option value="in_progress">In Progress</option>
-                <option value="completed">Completed</option>
-              </select>
-            </div>
-
-            {/* Due Date */}
-            <div>
-              <label className="text-[0.8125rem] font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                Due Date
-              </label>
-              <input
-                type="date"
-                value={formData.due_date}
-                onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
-                className="input-field"
-              />
-            </div>
-
-            {/* Estimated Time */}
-            <div>
-              <label className="text-[0.8125rem] font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-gray-400" />
-                Estimated Time (min)
-              </label>
-              <input
-                type="number"
-                value={formData.estimated_time}
-                onChange={(e) => setFormData({ ...formData, estimated_time: e.target.value })}
-                className="input-field"
-                placeholder="60"
-                min="1"
-              />
-            </div>
-
-            {/* Category */}
-            <div>
-              <label className="block text-[0.8125rem] font-medium text-gray-700 mb-1.5">Category</label>
-              <input
-                type="text"
-                value={formData.category}
-                onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                className="input-field"
-                placeholder="Work, Personal, etc."
-              />
-            </div>
-          </div>
-
-          {/* Tags */}
+          {/* Due Date */}
           <div>
             <label className="text-[0.8125rem] font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
-              <Tag className="w-3.5 h-3.5 text-gray-400" />
-              Tags
+              <Calendar className="w-3.5 h-3.5 text-gray-400" />
+              Due Date
             </label>
             <input
-              type="text"
-              value={formData.tags}
-              onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
+              type="date"
+              value={formData.due_date}
+              onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
               className="input-field"
-              placeholder="tag1, tag2, tag3"
             />
           </div>
 
@@ -437,7 +378,7 @@ export const TaskFormEnhanced = ({ onClose, taskId, parentTaskId }: TaskFormProp
                             <select
                               value={recurrence.frequency}
                               onChange={(e) =>
-                                setRecurrence({ ...recurrence, frequency: e.target.value as any })
+                                setRecurrence({ ...recurrence, frequency: e.target.value as RecurrenceRule['frequency'] })
                               }
                               className="input-field text-sm"
                             >

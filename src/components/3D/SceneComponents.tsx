@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Float, MeshDistortMaterial, MeshWobbleMaterial, Sphere, Torus, Box } from '@react-three/drei';
 import * as THREE from 'three';
@@ -85,7 +85,7 @@ function ParticleField({ scrollProgress, count = 100 }: {
 }) {
   const pointsRef = useRef<THREE.Points>(null);
 
-  const positions = useMemo(() => {
+  const [positions] = useState(() => {
     const pos = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       pos[i * 3] = (Math.random() - 0.5) * 10;
@@ -93,9 +93,9 @@ function ParticleField({ scrollProgress, count = 100 }: {
       pos[i * 3 + 2] = (Math.random() - 0.5) * 10;
     }
     return pos;
-  }, [count]);
+  });
 
-  const colors = useMemo(() => {
+  const [colors] = useState(() => {
     const col = new Float32Array(count * 3);
     const palette = [
       new THREE.Color('#10b981'),
@@ -111,7 +111,7 @@ function ParticleField({ scrollProgress, count = 100 }: {
       col[i * 3 + 2] = c.b;
     }
     return col;
-  }, [count]);
+  });
 
   useFrame((state) => {
     if (!pointsRef.current) return;
@@ -124,12 +124,14 @@ function ParticleField({ scrollProgress, count = 100 }: {
     <points ref={pointsRef}>
       <bufferGeometry>
         <bufferAttribute
+          args={[positions, 3]}
           attach="attributes-position"
           count={count}
           array={positions}
           itemSize={3}
         />
         <bufferAttribute
+          args={[colors, 3]}
           attach="attributes-color"
           count={count}
           array={colors}
@@ -272,7 +274,7 @@ function DataOrb({ position, color, intensity }: {
 }
 
 export function AnalyticsScene({ scrollProgress = 0 }: { scrollProgress?: number }) {
-  const dataPoints = useMemo(() => {
+  const [dataPoints] = useState(() => {
     const points = [];
     for (let i = 0; i < 30; i++) {
       points.push({
@@ -282,7 +284,7 @@ export function AnalyticsScene({ scrollProgress = 0 }: { scrollProgress?: number
       });
     }
     return points;
-  }, []);
+  });
 
   return (
     <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>

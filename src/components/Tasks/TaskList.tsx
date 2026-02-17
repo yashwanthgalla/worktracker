@@ -3,17 +3,18 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useTasks } from '../../hooks/useTasks';
 import { TaskCard } from './TaskCard';
 import { TaskFormEnhanced } from './TaskFormEnhanced';
-import { KanbanBoard } from './KanbanBoard';
+import { TaskDetailView } from './TaskDetailView';
 import { useAppStore } from '../../store/appStore';
-import { Plus, Loader2, Grid, List, Calendar as CalendarIcon, Search, Filter, SlidersHorizontal } from 'lucide-react';
+import { Plus, Loader2, Grid, List } from 'lucide-react';
 import { groupTasksByDate } from '../../utils/helpers';
 
 export const TaskList = () => {
   const { data: tasks, isLoading } = useTasks();
   const [showForm, setShowForm] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const { taskStatusFilter, setTaskStatusFilter, viewMode, setViewMode } = useAppStore();
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  const [searchQuery] = useState('');
+  const { taskStatusFilter, viewMode, setViewMode } = useAppStore();
 
   // Filter tasks
   const filteredTasks = Array.isArray(tasks)
@@ -47,36 +48,24 @@ export const TaskList = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
+      <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-gray-900 mb-1">Tasks</h2>
-          <p className="text-gray-500 text-sm">
-            {filteredTasks?.length || 0} task{filteredTasks?.length !== 1 ? 's' : ''}
-            {searchQuery && ' matching'}
+          <h2 className="text-3xl font-semibold tracking-tight text-text-primary mb-1">Tasks</h2>
+          <p className="text-text-tertiary text-[0.9375rem]">
+            {filteredTasks?.length || 0} task
+            {filteredTasks?.length !== 1 ? 's' : ''} total
           </p>
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Search */}
-          <div className="relative hidden md:block">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search tasks..."
-              className="w-52 pl-9 pr-4 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100 focus:outline-none transition-all"
-            />
-          </div>
-
           {/* View mode selector */}
-          <div className="flex items-center bg-gray-50 rounded-xl border border-gray-200 p-1">
+          <div className="flex items-center bg-white/60 backdrop-blur-md rounded-xl border border-black/6 p-1">
             <button
               onClick={() => setViewMode('list')}
               className={`p-2 rounded-lg transition-all ${
                 viewMode === 'list'
-                  ? 'bg-white shadow-sm text-gray-900'
-                  : 'text-gray-400 hover:text-gray-600'
+                  ? 'bg-black/6 text-text-primary'
+                  : 'text-text-tertiary hover:text-text-primary'
               }`}
             >
               <List className="w-4 h-4" />
@@ -85,8 +74,8 @@ export const TaskList = () => {
               onClick={() => setViewMode('kanban')}
               className={`p-2 rounded-lg transition-all ${
                 viewMode === 'kanban'
-                  ? 'bg-white shadow-sm text-gray-900'
-                  : 'text-gray-400 hover:text-gray-600'
+                  ? 'bg-black/6 text-text-primary'
+                  : 'text-text-tertiary hover:text-text-primary'
               }`}
             >
               <Grid className="w-4 h-4" />
@@ -106,28 +95,6 @@ export const TaskList = () => {
         </div>
       </div>
 
-      {/* Status filter tabs */}
-      <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl border border-gray-100 w-fit">
-        {[
-          { value: 'all', label: 'All' },
-          { value: 'pending', label: 'To Do' },
-          { value: 'in_progress', label: 'In Progress' },
-          { value: 'completed', label: 'Done' },
-        ].map((tab) => (
-          <button
-            key={tab.value}
-            onClick={() => setTaskStatusFilter(tab.value as any)}
-            className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              taskStatusFilter === tab.value
-                ? 'bg-white shadow-sm text-gray-900'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
       {/* Task groups */}
       <div className="space-y-8">
         {/* Overdue */}
@@ -143,7 +110,7 @@ export const TaskList = () => {
                   <TaskCard
                     key={task.id}
                     task={task}
-                    onClick={() => setSelectedTaskId(task.id)}
+                    onClick={() => setDetailTaskId(task.id)}
                   />
                 ))}
               </AnimatePresence>
@@ -164,7 +131,7 @@ export const TaskList = () => {
                   <TaskCard
                     key={task.id}
                     task={task}
-                    onClick={() => setSelectedTaskId(task.id)}
+                    onClick={() => setDetailTaskId(task.id)}
                   />
                 ))}
               </AnimatePresence>
@@ -185,7 +152,7 @@ export const TaskList = () => {
                   <TaskCard
                     key={task.id}
                     task={task}
-                    onClick={() => setSelectedTaskId(task.id)}
+                    onClick={() => setDetailTaskId(task.id)}
                   />
                 ))}
               </AnimatePresence>
@@ -196,8 +163,8 @@ export const TaskList = () => {
         {/* Later */}
         {groupedTasks?.later && groupedTasks.later.length > 0 && (
           <div>
-            <h3 className="text-[0.9375rem] font-semibold mb-3 text-[#86868b] flex items-center gap-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-[#86868b]" />
+            <h3 className="text-[0.9375rem] font-semibold mb-3 text-text-tertiary flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-text-tertiary" />
               Later ({groupedTasks.later.length})
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -206,7 +173,7 @@ export const TaskList = () => {
                   <TaskCard
                     key={task.id}
                     task={task}
-                    onClick={() => setSelectedTaskId(task.id)}
+                    onClick={() => setDetailTaskId(task.id)}
                   />
                 ))}
               </AnimatePresence>
@@ -224,8 +191,8 @@ export const TaskList = () => {
             <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-primary-50 flex items-center justify-center">
               <List className="w-8 h-8 text-primary-400" />
             </div>
-            <h3 className="text-xl font-semibold text-[#1d1d1f] mb-1">No tasks yet</h3>
-            <p className="text-[#86868b] mb-6">
+            <h3 className="text-xl font-semibold text-text-primary mb-1">No tasks yet</h3>
+            <p className="text-text-tertiary mb-6">
               Create your first task to get started!
             </p>
             <button onClick={() => setShowForm(true)} className="btn-primary inline-flex items-center gap-2">
@@ -236,10 +203,20 @@ export const TaskList = () => {
         )}
       </div>
 
+      {/* Task detail view */}
+      <AnimatePresence>
+        {detailTaskId && (
+          <TaskDetailView
+            taskId={detailTaskId}
+            onClose={() => setDetailTaskId(null)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Task form modal */}
       <AnimatePresence>
         {showForm && (
-          <TaskForm
+          <TaskFormEnhanced
             onClose={() => {
               setShowForm(false);
               setSelectedTaskId(null);
