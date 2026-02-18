@@ -1,103 +1,92 @@
-import { supabase } from '../lib/supabase';
+import { db } from '../lib/firebase';
+import { auth } from '../lib/firebase';
+import {
+  collection, doc, addDoc, getDoc, getDocs, updateDoc, query, where, orderBy,
+} from 'firebase/firestore';
 import type { WorkSession } from '../types/database.types';
 
-// Helper
-function mapSessionFromDB(dbSession: Record<string, unknown>): WorkSession {
+// ═══════════════════════════════════════════════════════
+// Work Session Service – Firestore only
+// Collection: users/{uid}/work_sessions/{sessionId}
+// ═══════════════════════════════════════════════════════
+
+function uid() {
+  const u = auth.currentUser?.uid;
+  if (!u) throw new Error('Not authenticated');
+  return u;
+}
+
+function sessionsCol() { return collection(db, 'users', uid(), 'work_sessions'); }
+
+function docToSession(id: string, d: Record<string, unknown>): WorkSession {
   return {
-    ...dbSession,
-    started_at: new Date(dbSession.started_at),
-    ended_at: dbSession.ended_at ? new Date(dbSession.ended_at) : undefined,
-    created_at: new Date(dbSession.created_at),
+    id,
+    user_id: d.user_id as string ?? uid(),
+    task_id: d.task_id as string | undefined,
+    session_type: (d.session_type as WorkSession['session_type']) ?? 'pomodoro',
+    duration: d.duration as number ?? 0,
+    started_at: d.started_at ? new Date(d.started_at as string) : new Date(),
+    ended_at: d.ended_at ? new Date(d.ended_at as string) : undefined,
+    completed: d.completed as boolean ?? false,
+    created_at: d.created_at ? new Date(d.created_at as string) : new Date(),
+    notes: d.notes as string | undefined,
+    mood: d.mood as WorkSession['mood'],
+    distractions: d.distractions as number | undefined,
   };
 }
 
-// Create session
+export async function getSessions(): Promise<WorkSession[]> {
+  const q = query(sessionsCol(), orderBy('started_at', 'desc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((s) => docToSession(s.id, s.data() as Record<string, unknown>));
+}
+
+export async function getTodaySessions(): Promise<WorkSession[]> {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const q = query(sessionsCol(), where('started_at', '>=', start.toISOString()), orderBy('started_at', 'desc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((s) => docToSession(s.id, s.data() as Record<string, unknown>));
+}
+
 export async function startSession(
   taskId: string | null,
   duration: number,
-  sessionType: 'pomodoro' | 'custom' | 'break' = 'pomodoro'
+  sessionType: 'pomodoro' | 'custom' | 'break' = 'pomodoro',
 ): Promise<WorkSession> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('User not authenticated');
-
-  const { data, error } = await supabase
-    .from('work_sessions')
-    .insert({
-      user_id: user.id,
-      task_id: taskId,
-      session_type: sessionType,
-      duration,
-      started_at: new Date().toISOString(),
-      completed: false,
-    })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return mapSessionFromDB(data);
+  const data = {
+    user_id: uid(),
+    task_id: taskId || null,
+    session_type: sessionType,
+    duration,
+    started_at: new Date().toISOString(),
+    ended_at: null,
+    completed: false,
+    created_at: new Date().toISOString(),
+  };
+  const ref = await addDoc(sessionsCol(), data);
+  return docToSession(ref.id, data as Record<string, unknown>);
 }
 
-// End session
-export async function endSession(sessionId: string, completed: boolean = true) {
-  const { data, error } = await supabase
-    .from('work_sessions')
-    .update({
-      ended_at: new Date().toISOString(),
-      completed,
-    })
-    .eq('id', sessionId)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return mapSessionFromDB(data);
+export async function endSession(sessionId: string, completed = true): Promise<WorkSession> {
+  const now = new Date().toISOString();
+  await updateDoc(doc(db, 'users', uid(), 'work_sessions', sessionId), { ended_at: now, completed });
+  const snap = await getDoc(doc(db, 'users', uid(), 'work_sessions', sessionId));
+  if (!snap.exists()) throw new Error('Session not found');
+  return docToSession(snap.id, snap.data() as Record<string, unknown>);
 }
 
-// Get sessions
-export async function getSessions(userId?: string, startDate?: Date, endDate?: Date) {
-  const { data: { user } } = await supabase.auth.getUser();
-  const targetUserId = userId || user?.id;
-  if (!targetUserId) throw new Error('User not authenticated');
-
-  let query = supabase
-    .from('work_sessions')
-    .select('*, task:task_id(*)')
-    .eq('user_id', targetUserId)
-    .order('started_at', { ascending: false });
-
-  if (startDate) {
-    query = query.gte('started_at', startDate.toISOString());
-  }
-  if (endDate) {
-    query = query.lte('started_at', endDate.toISOString());
-  }
-
-  const { data, error } = await query;
-
-  if (error) throw error;
-  return data.map(mapSessionFromDB);
+export async function getSessionsByDateRange(startDate: Date, endDate: Date): Promise<WorkSession[]> {
+  const q = query(
+    sessionsCol(),
+    where('started_at', '>=', startDate.toISOString()),
+    where('started_at', '<=', endDate.toISOString()),
+    orderBy('started_at', 'desc'),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((s) => docToSession(s.id, s.data() as Record<string, unknown>));
 }
 
-// Get today's sessions
-export async function getTodaySessions() {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  return getSessions(undefined, startOfDay);
-}
-
-// Calculate total focus time
-export async function getTotalFocusTime(startDate: Date, endDate: Date): Promise<number> {
-  const sessions = await getSessions(undefined, startDate, endDate);
-  return sessions
-    .filter((s) => s.completed && s.session_type !== 'break')
-    .reduce((total, session) => total + session.duration, 0);
-}
-
-// Re-export as namespace for backward compat
 export const WorkSessionService = {
-  startSession,
-  endSession,
-  getSessions,
-  getTodaySessions,
-  getTotalFocusTime,
+  getSessions, getTodaySessions, startSession, endSession, getSessionsByDateRange,
 };

@@ -1,51 +1,38 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
-  User,
-  Mail,
-  Lock,
-  MapPin,
-  Phone,
-  Globe,
-  Bell,
-  Palette,
-  Shield,
-  Save,
-  Camera,
-  Check,
-  Loader2,
-  ChevronRight,
-  Building2,
-  CreditCard,
-  Clock,
-  Languages,
-  AtSign,
+  User, Mail, Lock, MapPin, Phone, Globe, Bell, Palette, Shield,
+  Save, Loader2, ChevronRight, Building2,
+  AtSign, Smartphone, ArrowRight, Check, CheckCircle2,
+  Trash2, Download, LogOut,
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore';
-import { supabase } from '../../lib/supabase';
 import { AuthService } from '../../services/authService';
+import { TaskService } from '../../services/taskService';
+import { db } from '../../lib/firebase';
+import { doc, getDoc } from 'firebase/firestore';
 import toast from 'react-hot-toast';
 
-// ─── Types ───
-interface UserProfileData {
+// ═══════════════════════════════════════════════════════
+// Settings Page – Firestore profile, Firebase Auth
+// ═══════════════════════════════════════════════════════
+
+interface ProfileData {
   full_name: string;
   username: string;
   email: string;
   phone: string;
   bio: string;
   avatar_url: string;
-  // Address
   address_line1: string;
   address_line2: string;
   city: string;
   state: string;
   zip_code: string;
   country: string;
-  // Preferences
   timezone: string;
   language: string;
   date_format: string;
-  // Notifications
   email_notifications: boolean;
   push_notifications: boolean;
   task_reminders: boolean;
@@ -54,209 +41,130 @@ interface UserProfileData {
   message_notifications: boolean;
 }
 
-const defaultProfile: UserProfileData = {
-  full_name: '',
-  username: '',
-  email: '',
-  phone: '',
-  bio: '',
-  avatar_url: '',
-  address_line1: '',
-  address_line2: '',
-  city: '',
-  state: '',
-  zip_code: '',
-  country: '',
+const defaultProfile: ProfileData = {
+  full_name: '', username: '', email: '', phone: '', bio: '', avatar_url: '',
+  address_line1: '', address_line2: '', city: '', state: '', zip_code: '', country: '',
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  language: 'en',
-  date_format: 'MM/DD/YYYY',
-  email_notifications: true,
-  push_notifications: true,
-  task_reminders: true,
-  weekly_summary: true,
-  friend_requests: true,
-  message_notifications: true,
+  language: 'en', date_format: 'MM/DD/YYYY',
+  email_notifications: true, push_notifications: true, task_reminders: true,
+  weekly_summary: true, friend_requests: true, message_notifications: true,
 };
 
-type Section = 'profile' | 'address' | 'preferences' | 'notifications' | 'security';
+type Section = 'profile' | 'security' | 'notifications' | 'appearance' | 'address' | 'account';
 
-const sections: { id: Section; label: string; icon: typeof User; description: string }[] = [
-  { id: 'profile', label: 'Profile', icon: User, description: 'Name, email, phone, and bio' },
-  { id: 'address', label: 'Address', icon: MapPin, description: 'Mailing and billing address' },
-  { id: 'preferences', label: 'Preferences', icon: Palette, description: 'Theme, language, and display' },
-  { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Email, push, and reminders' },
-  { id: 'security', label: 'Security', icon: Shield, description: 'Password and account safety' },
+const sections: { id: Section; label: string; icon: React.ElementType }[] = [
+  { id: 'profile', label: 'Profile', icon: User },
+  { id: 'security', label: 'Security', icon: Shield },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'address', label: 'Address', icon: MapPin },
+  { id: 'account', label: 'Account', icon: Shield },
 ];
 
 export const SettingsPage = () => {
-  const user = useAppStore((s) => s.user);
-  const { theme, toggleTheme } = useAppStore();
-  const [activeSection, setActiveSection] = useState<Section>('profile');
-  const [profile, setProfile] = useState<UserProfileData>(defaultProfile);
+  const { user, setUser, theme, toggleTheme } = useAppStore();
+  const [profile, setProfile] = useState<ProfileData>(defaultProfile);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [activeSection, setActiveSection] = useState<Section>('profile');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
-  // Password change
-  const [passwords, setPasswords] = useState({ current: '', new: '', confirm: '' });
-  const [changingPassword, setChangingPassword] = useState(false);
-
-  // Load profile from Supabase user_profiles + auth metadata
+  // Load profile from Firestore
   useEffect(() => {
-    const loadProfile = async () => {
-      if (!user) return;
-
-      // Get profile from user_profiles table
-      const { data } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single();
-
-      // Get settings from a separate settings store (or user_metadata)
-      const metadata = user.user_metadata || {};
-
-      setProfile({
-        full_name: data?.full_name || metadata.full_name || '',
-        username: data?.username || metadata.username || '',
-        email: user.email || '',
-        phone: metadata.phone || '',
-        bio: metadata.bio || '',
-        avatar_url: data?.avatar_url || metadata.avatar_url || '',
-        address_line1: metadata.address_line1 || '',
-        address_line2: metadata.address_line2 || '',
-        city: metadata.city || '',
-        state: metadata.state || '',
-        zip_code: metadata.zip_code || '',
-        country: metadata.country || '',
-        timezone: metadata.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-        language: metadata.language || 'en',
-        date_format: metadata.date_format || 'MM/DD/YYYY',
-        email_notifications: metadata.email_notifications ?? true,
-        push_notifications: metadata.push_notifications ?? true,
-        task_reminders: metadata.task_reminders ?? true,
-        weekly_summary: metadata.weekly_summary ?? true,
-        friend_requests: metadata.friend_requests ?? true,
-        message_notifications: metadata.message_notifications ?? true,
-      });
-    };
-    loadProfile();
-  }, [user]);
-
-  const updateField = useCallback((field: keyof UserProfileData, value: string | boolean) => {
-    setProfile((prev) => ({ ...prev, [field]: value }));
-    setSaved(false);
-  }, []);
+    if (!user?.id) return;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'user_profiles', user.id));
+        if (snap.exists()) {
+          const d = snap.data();
+          setProfile({
+            ...defaultProfile,
+            full_name: d.full_name || '',
+            username: d.username || '',
+            email: d.email || user.email || '',
+            phone: d.phone || '',
+            bio: d.bio || '',
+            avatar_url: d.avatar_url || '',
+            address_line1: d.address_line1 || '',
+            address_line2: d.address_line2 || '',
+            city: d.city || '',
+            state: d.state || '',
+            zip_code: d.zip_code || '',
+            country: d.country || '',
+            timezone: d.timezone || defaultProfile.timezone,
+            language: d.language || 'en',
+            date_format: d.date_format || 'MM/DD/YYYY',
+            email_notifications: d.email_notifications ?? true,
+            push_notifications: d.push_notifications ?? true,
+            task_reminders: d.task_reminders ?? true,
+            weekly_summary: d.weekly_summary ?? true,
+            friend_requests: d.friend_requests ?? true,
+            message_notifications: d.message_notifications ?? true,
+          });
+        }
+      } catch (e) { console.error('Failed to load profile:', e); }
+      setLoading(false);
+    })();
+  }, [user?.id, user?.email]);
 
   const handleSave = async () => {
-    if (!user) return;
     setSaving(true);
-
     try {
-      // Update auth user metadata (stores address, preferences, etc.)
-      await AuthService.updateProfile({
-        full_name: profile.full_name,
-        username: profile.username,
-        avatar_url: profile.avatar_url,
-        phone: profile.phone,
-        bio: profile.bio,
-        address_line1: profile.address_line1,
-        address_line2: profile.address_line2,
-        city: profile.city,
-        state: profile.state,
-        zip_code: profile.zip_code,
-        country: profile.country,
-        timezone: profile.timezone,
-        language: profile.language,
-        date_format: profile.date_format,
-        email_notifications: profile.email_notifications,
-        push_notifications: profile.push_notifications,
-        task_reminders: profile.task_reminders,
-        weekly_summary: profile.weekly_summary,
-        friend_requests: profile.friend_requests,
-        message_notifications: profile.message_notifications,
-      } as Record<string, unknown>);
-
-      // Also update user_profiles table
-      await supabase
-        .from('user_profiles')
-        .update({
-          full_name: profile.full_name,
-          username: profile.username || null,
-          avatar_url: profile.avatar_url,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', user.id);
-
-      setSaved(true);
-      toast.success('Settings saved successfully');
-      setTimeout(() => setSaved(false), 2000);
-    } catch (err) {
-      console.error('Failed to save settings:', err);
+      await AuthService.updateProfile(profile as unknown as Record<string, unknown>);
+      const updated = await AuthService.getCurrentUser();
+      if (updated) setUser(updated);
+      toast.success('Settings saved!');
+    } catch (e) {
       toast.error('Failed to save settings');
-    } finally {
-      setSaving(false);
     }
+    setSaving(false);
   };
 
   const handlePasswordChange = async () => {
-    if (passwords.new !== passwords.confirm) {
-      toast.error('New passwords do not match');
-      return;
-    }
-    if (passwords.new.length < 6) {
-      toast.error('Password must be at least 6 characters');
-      return;
-    }
-
-    setChangingPassword(true);
+    if (newPassword.length < 6) { toast.error('Password must be at least 6 characters'); return; }
+    if (newPassword !== confirmPassword) { toast.error('Passwords do not match'); return; }
     try {
-      await AuthService.updatePassword(passwords.new);
-      toast.success('Password updated successfully');
-      setPasswords({ current: '', new: '', confirm: '' });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update password';
-      toast.error(message);
-    } finally {
-      setChangingPassword(false);
-    }
+      await AuthService.updatePassword(newPassword);
+      toast.success('Password updated!');
+      setNewPassword(''); setConfirmPassword('');
+    } catch (e) { toast.error('Failed to update password. You may need to re-authenticate.'); }
   };
+
+  const update = (key: keyof ProfileData, value: string | boolean) => {
+    setProfile((prev) => ({ ...prev, [key]: value }));
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-5xl mx-auto">
-      {/* Header */}
       <div className="mb-8">
-        <h1 className="text-[1.75rem] font-semibold tracking-tight text-text-primary mb-1">
-          Settings
-        </h1>
-        <p className="text-[0.9375rem] text-text-tertiary">
-          Manage your account, preferences, and privacy
-        </p>
+        <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+        <p className="text-gray-500 text-sm mt-1">Manage your account preferences</p>
       </div>
 
-      <div className="flex gap-6">
-        {/* Sidebar Navigation */}
+      <div className="flex gap-8">
+        {/* Sidebar */}
         <div className="w-56 shrink-0">
           <nav className="space-y-1">
-            {sections.map((section) => {
-              const Icon = section.icon;
-              const isActive = activeSection === section.id;
+            {sections.map((s) => {
+              const Icon = s.icon;
+              const active = activeSection === s.id;
               return (
-                <button
-                  key={section.id}
-                  onClick={() => setActiveSection(section.id)}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-left transition-all duration-200 ${
-                    isActive
-                      ? 'bg-primary-50 text-primary-600'
-                      : 'text-text-secondary hover:bg-black/3 hover:text-text-primary'
-                  }`}
-                >
-                  <Icon className="w-4.5 h-4.5 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-[0.8125rem] font-medium ${isActive ? 'text-primary-600' : ''}`}>
-                      {section.label}
-                    </p>
-                  </div>
-                  {isActive && <ChevronRight className="w-3.5 h-3.5 text-primary-400" />}
+                <button key={s.id} onClick={() => setActiveSection(s.id)}
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                    active ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                  }`}>
+                  <Icon className="w-4.5 h-4.5" />
+                  {s.label}
+                  {active && <ChevronRight className="w-4 h-4 ml-auto" />}
                 </button>
               );
             })}
@@ -264,537 +172,332 @@ export const SettingsPage = () => {
         </div>
 
         {/* Content */}
-        <div className="flex-1 min-w-0">
-          <motion.div
-            key={activeSection}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            {activeSection === 'profile' && (
-              <ProfileSection profile={profile} updateField={updateField} />
-            )}
-            {activeSection === 'address' && (
-              <AddressSection profile={profile} updateField={updateField} />
-            )}
-            {activeSection === 'preferences' && (
-              <PreferencesSection
-                profile={profile}
-                updateField={updateField}
-                theme={theme}
-                toggleTheme={toggleTheme}
-              />
-            )}
-            {activeSection === 'notifications' && (
-              <NotificationsSection profile={profile} updateField={updateField} />
-            )}
-            {activeSection === 'security' && (
-              <SecuritySection
-                passwords={passwords}
-                setPasswords={setPasswords}
-                changingPassword={changingPassword}
-                onChangePassword={handlePasswordChange}
-                userEmail={user?.email || ''}
-              />
-            )}
+        <div className="flex-1 bg-white rounded-2xl border border-gray-100 p-8 shadow-sm">
+          {activeSection === 'profile' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+              <h2 className="text-lg font-semibold text-gray-900">Profile Information</h2>
 
-            {/* Save Button (shown for all except security which has its own) */}
-            {activeSection !== 'security' && (
-              <div className="mt-8 flex items-center gap-3">
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleSave}
-                  disabled={saving}
-                  className="btn-primary flex items-center gap-2"
-                >
-                  {saving ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : saved ? (
-                    <Check className="w-4 h-4" />
-                  ) : (
-                    <Save className="w-4 h-4" />
-                  )}
-                  {saving ? 'Saving...' : saved ? 'Saved' : 'Save Changes'}
-                </motion.button>
+              {/* Avatar */}
+              <div className="flex items-center gap-4">
+                <div className="w-20 h-20 rounded-2xl bg-linear-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-white text-2xl font-bold shadow-lg">
+                  {profile.avatar_url ? <img src={profile.avatar_url} className="w-full h-full rounded-2xl object-cover" /> : (profile.full_name?.[0] || user?.email?.[0] || 'U').toUpperCase()}
+                </div>
+                <div>
+                  <p className="font-medium text-gray-900">{profile.full_name || 'Your Name'}</p>
+                  <p className="text-sm text-gray-500">{profile.email}</p>
+                </div>
               </div>
-            )}
-          </motion.div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <InputField icon={User} label="Full Name" value={profile.full_name} onChange={(v) => update('full_name', v)} />
+                <InputField icon={AtSign} label="Username" value={profile.username} onChange={(v) => update('username', v)} />
+                <InputField icon={Mail} label="Email" value={profile.email} onChange={(v) => update('email', v)} disabled />
+                <InputField icon={Phone} label="Phone" value={profile.phone} onChange={(v) => update('phone', v)} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Bio</label>
+                <textarea value={profile.bio} onChange={(e) => update('bio', e.target.value)} rows={3}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 outline-none text-sm transition-all resize-none" />
+              </div>
+
+              <PhoneVerificationCard />
+            </motion.div>
+          )}
+
+          {activeSection === 'security' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+              <h2 className="text-lg font-semibold text-gray-900">Security</h2>
+              <div className="space-y-4">
+                <InputField icon={Lock} label="New Password" value={newPassword} onChange={setNewPassword} type="password" />
+                <InputField icon={Lock} label="Confirm Password" value={confirmPassword} onChange={setConfirmPassword} type="password" />
+                <button onClick={handlePasswordChange}
+                  className="px-6 py-2.5 rounded-xl bg-linear-to-r from-emerald-500 to-teal-500 text-white text-sm font-medium hover:from-emerald-600 hover:to-teal-600 transition-all">
+                  Update Password
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {activeSection === 'notifications' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+              <h2 className="text-lg font-semibold text-gray-900">Notifications</h2>
+              <div className="space-y-4">
+                <ToggleRow label="Email Notifications" description="Receive email updates" checked={profile.email_notifications} onChange={(v) => update('email_notifications', v)} />
+                <ToggleRow label="Push Notifications" description="Browser push notifications" checked={profile.push_notifications} onChange={(v) => update('push_notifications', v)} />
+                <ToggleRow label="Task Reminders" description="Get reminded about due tasks" checked={profile.task_reminders} onChange={(v) => update('task_reminders', v)} />
+                <ToggleRow label="Weekly Summary" description="Receive weekly productivity digest" checked={profile.weekly_summary} onChange={(v) => update('weekly_summary', v)} />
+                <ToggleRow label="Friend Requests" description="Notify on friend / follow requests" checked={profile.friend_requests} onChange={(v) => update('friend_requests', v)} />
+                <ToggleRow label="Message Notifications" description="Notify on new messages" checked={profile.message_notifications} onChange={(v) => update('message_notifications', v)} />
+              </div>
+            </motion.div>
+          )}
+
+          {activeSection === 'appearance' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+              <h2 className="text-lg font-semibold text-gray-900">Appearance</h2>
+              <div className="flex items-center justify-between p-4 rounded-xl border border-gray-100">
+                <div>
+                  <p className="font-medium text-gray-900">Dark Mode</p>
+                  <p className="text-sm text-gray-500">Switch between light and dark themes</p>
+                </div>
+                <button onClick={toggleTheme}
+                  className={`w-12 h-7 rounded-full transition-colors ${theme === 'dark' ? 'bg-emerald-500' : 'bg-gray-300'} relative`}>
+                  <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-transform ${theme === 'dark' ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Language</label>
+                  <select value={profile.language} onChange={(e) => update('language', e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-400 outline-none text-sm">
+                    <option value="en">English</option>
+                    <option value="es">Español</option>
+                    <option value="fr">Français</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Date Format</label>
+                  <select value={profile.date_format} onChange={(e) => update('date_format', e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-400 outline-none text-sm">
+                    <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                    <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                    <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+                  </select>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeSection === 'address' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+              <h2 className="text-lg font-semibold text-gray-900">Address</h2>
+              <div className="space-y-4">
+                <InputField icon={MapPin} label="Address Line 1" value={profile.address_line1} onChange={(v) => update('address_line1', v)} />
+                <InputField icon={MapPin} label="Address Line 2" value={profile.address_line2} onChange={(v) => update('address_line2', v)} />
+                <div className="grid grid-cols-2 gap-4">
+                  <InputField icon={Building2} label="City" value={profile.city} onChange={(v) => update('city', v)} />
+                  <InputField icon={MapPin} label="State" value={profile.state} onChange={(v) => update('state', v)} />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <InputField icon={MapPin} label="ZIP Code" value={profile.zip_code} onChange={(v) => update('zip_code', v)} />
+                  <InputField icon={Globe} label="Country" value={profile.country} onChange={(v) => update('country', v)} />
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeSection === 'account' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+              <h2 className="text-lg font-semibold text-gray-900">Account</h2>
+
+              {/* Account Info */}
+              <div className="p-4 rounded-xl border border-gray-100 bg-gray-50/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-gray-900 text-sm">Email</p>
+                    <p className="text-xs text-gray-500">{user?.email}</p>
+                  </div>
+                  <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg font-medium">Verified</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-gray-900 text-sm">Account ID</p>
+                    <p className="text-xs text-gray-400 font-mono">{user?.id?.slice(0, 20)}...</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Export Data */}
+              <div className="p-4 rounded-xl border border-gray-100">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-gray-900 text-sm">Export Your Data</p>
+                    <p className="text-xs text-gray-500">Download all your tasks, sessions, and settings as JSON</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const tasks = await TaskService.getTasks();
+                        const data = { profile, tasks, exportedAt: new Date().toISOString() };
+                        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url; a.download = `worktracker-export-${new Date().toISOString().split('T')[0]}.json`;
+                        a.click(); URL.revokeObjectURL(url);
+                        toast.success('Data exported!');
+                      } catch { toast.error('Failed to export data'); }
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    Export
+                  </button>
+                </div>
+              </div>
+
+              {/* Sign Out */}
+              <div className="p-4 rounded-xl border border-gray-100">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-gray-900 text-sm">Sign Out</p>
+                    <p className="text-xs text-gray-500">Sign out from this device</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try { await AuthService.signOut(); toast.success('Signed out'); } catch { toast.error('Failed to sign out'); }
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Sign Out
+                  </button>
+                </div>
+              </div>
+
+              {/* Danger Zone */}
+              <div className="p-4 rounded-xl border border-red-100 bg-red-50/30">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-red-700 text-sm">Delete Account</p>
+                    <p className="text-xs text-red-500">Permanently delete your account and all data. This cannot be undone.</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to delete your account? This action is permanent and cannot be undone.')) {
+                        toast.error('Account deletion requires re-authentication. Please contact support.');
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-100 text-red-700 text-sm font-medium hover:bg-red-200 transition-colors shrink-0"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Save Button */}
+          <div className="mt-8 pt-6 border-t border-gray-100 flex justify-end">
+            <button onClick={handleSave} disabled={saving}
+              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-linear-to-r from-emerald-500 to-teal-500 text-white text-sm font-medium hover:from-emerald-600 hover:to-teal-600 transition-all disabled:opacity-50 shadow-lg shadow-emerald-500/20">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              Save Changes
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
 };
 
-// ═══════════════════════════════════════════
-// Section Components
-// ═══════════════════════════════════════════
+// ─── Sub-components ───
 
-interface SectionProps {
-  profile: UserProfileData;
-  updateField: (field: keyof UserProfileData, value: string | boolean) => void;
-}
-
-function SectionCard({ title, description, children }: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="glass-card p-6 mb-5">
-      <h2 className="text-[1.0625rem] font-semibold text-text-primary mb-0.5">{title}</h2>
-      {description && (
-        <p className="text-[0.8125rem] text-text-tertiary mb-5">{description}</p>
-      )}
-      {!description && <div className="mb-5" />}
-      {children}
-    </div>
-  );
-}
-
-function InputField({ label, icon: Icon, value, onChange, type = 'text', placeholder, disabled = false }: {
-  label: string;
-  icon: typeof User;
-  value: string;
-  onChange: (val: string) => void;
-  type?: string;
-  placeholder?: string;
-  disabled?: boolean;
+function InputField({ icon: Icon, label, value, onChange, type = 'text', disabled = false }: {
+  icon: React.ElementType; label: string; value: string; onChange: (v: string) => void; type?: string; disabled?: boolean;
 }) {
   return (
     <div>
-      <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">
-        {label}
-      </label>
+      <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
       <div className="relative">
-        <Icon className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
-        <input
-          type={type}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          disabled={disabled}
-          className="input-field pl-10 disabled:opacity-50 disabled:cursor-not-allowed"
-        />
+        <Icon className="absolute left-3 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-gray-400" />
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}
+          className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 outline-none text-sm transition-all disabled:bg-gray-50 disabled:text-gray-400" />
       </div>
     </div>
   );
 }
 
-function ToggleSwitch({ enabled, onChange, label, description }: {
-  enabled: boolean;
-  onChange: (val: boolean) => void;
-  label: string;
-  description?: string;
+function ToggleRow({ label, description, checked, onChange }: {
+  label: string; description: string; checked: boolean; onChange: (v: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between py-3">
+    <div className="flex items-center justify-between p-4 rounded-xl border border-gray-100">
       <div>
-        <p className="text-[0.875rem] font-medium text-text-primary">{label}</p>
-        {description && (
-          <p className="text-[0.75rem] text-text-tertiary mt-0.5">{description}</p>
-        )}
+        <p className="font-medium text-gray-900 text-sm">{label}</p>
+        <p className="text-xs text-gray-500">{description}</p>
       </div>
-      <button
-        onClick={() => onChange(!enabled)}
-        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${
-          enabled ? 'bg-primary-500' : 'bg-gray-300'
-        }`}
-      >
-        <motion.div
-          animate={{ x: enabled ? 20 : 2 }}
-          transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-          className="absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm"
-        />
+      <button onClick={() => onChange(!checked)}
+        className={`w-12 h-7 rounded-full transition-colors ${checked ? 'bg-emerald-500' : 'bg-gray-300'} relative`}>
+        <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
       </button>
     </div>
   );
 }
 
-// ─── Profile Section ───
-function ProfileSection({ profile, updateField }: SectionProps) {
+function PhoneVerificationCard() {
+  const [phone, setPhone] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [step, setStep] = useState<'idle' | 'sending' | 'verify' | 'done'>('idle');
+  const [loading, setLoading] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const sendOTP = async () => {
+    if (!phone.trim()) { toast.error('Enter a phone number'); return; }
+    setLoading(true);
+    try {
+      AuthService.initRecaptcha('recaptcha-settings');
+      await AuthService.sendPhoneSMSOTP(phone);
+      setStep('verify');
+      toast.success('OTP sent!');
+    } catch (e) {
+      toast.error('Failed to send OTP');
+      console.error(e);
+    }
+    setLoading(false);
+  };
+
+  const verifyOTP = async () => {
+    if (otpCode.length < 6) { toast.error('Enter the 6-digit code'); return; }
+    setLoading(true);
+    try {
+      const ok = await AuthService.verifyPhoneSMSOTP(otpCode);
+      if (ok) { setStep('done'); toast.success('Phone verified!'); }
+      else toast.error('Invalid code');
+    } catch { toast.error('Verification failed'); }
+    setLoading(false);
+  };
+
+  useEffect(() => () => AuthService.cleanupRecaptcha(), []);
+
   return (
-    <>
-      <SectionCard title="Personal Information" description="Your public profile details visible to others">
-        {/* Avatar */}
-        <div className="flex items-center gap-5 mb-6">
-          <div className="relative group">
-            <div className="w-20 h-20 rounded-2xl bg-linear-to-br from-primary-400 via-emerald-400 to-teal-500 flex items-center justify-center shadow-lg shadow-primary-200/40">
-              {profile.avatar_url ? (
-                <img src={profile.avatar_url} alt="Avatar" className="w-full h-full rounded-2xl object-cover" />
-              ) : (
-                <span className="text-white text-2xl font-bold">
-                  {(profile.full_name || profile.email)[0]?.toUpperCase() || 'U'}
-                </span>
-              )}
-            </div>
-            <div className="absolute inset-0 rounded-2xl bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer">
-              <Camera className="w-5 h-5 text-white" />
-            </div>
-          </div>
-          <div>
-            <h3 className="text-[0.9375rem] font-semibold text-text-primary">
-              {profile.full_name || 'Your Name'}
-            </h3>
-            <p className="text-[0.8125rem] text-text-tertiary">{profile.username ? `@${profile.username}` : profile.email}</p>
-            <p className="text-[0.75rem] text-text-tertiary mt-1">
-              Click avatar to change photo
-            </p>
-          </div>
-        </div>
+    <div className="p-5 rounded-xl border border-gray-100 bg-gray-50/50 space-y-4">
+      <div className="flex items-center gap-2">
+        <Smartphone className="w-5 h-5 text-emerald-500" />
+        <h3 className="font-medium text-gray-900 text-sm">Phone Verification</h3>
+        {step === 'done' && <CheckCircle2 className="w-4 h-4 text-emerald-500 ml-auto" />}
+      </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <InputField
-            label="Full Name"
-            icon={User}
-            value={profile.full_name}
-            onChange={(v) => updateField('full_name', v)}
-            placeholder="John Doe"
-          />
-          <InputField
-            label="Username"
-            icon={AtSign}
-            value={profile.username}
-            onChange={(v) => updateField('username', v.toLowerCase().replace(/[^a-z0-9._]/g, ''))}
-            placeholder="johndoe"
-          />
-          <InputField
-            label="Email"
-            icon={Mail}
-            value={profile.email}
-            onChange={() => {}}
-            disabled
-            placeholder="you@example.com"
-          />
-          <InputField
-            label="Phone Number"
-            icon={Phone}
-            value={profile.phone}
-            onChange={(v) => updateField('phone', v)}
-            placeholder="+1 (555) 123-4567"
-          />
-          <InputField
-            label="Website"
-            icon={Globe}
-            value={profile.avatar_url}
-            onChange={(v) => updateField('avatar_url', v)}
-            placeholder="https://yoursite.com"
-          />
-        </div>
-
-        <div className="mt-4">
-          <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">
-            Bio
-          </label>
-          <textarea
-            value={profile.bio}
-            onChange={(e) => updateField('bio', e.target.value)}
-            placeholder="Tell us a bit about yourself..."
-            rows={3}
-            className="input-field resize-none"
-          />
-        </div>
-      </SectionCard>
-    </>
-  );
-}
-
-// ─── Address Section ───
-function AddressSection({ profile, updateField }: SectionProps) {
-  return (
-    <>
-      <SectionCard title="Mailing Address" description="Used for billing and physical mail">
-        <div className="space-y-4">
-          <InputField
-            label="Address Line 1"
-            icon={MapPin}
-            value={profile.address_line1}
-            onChange={(v) => updateField('address_line1', v)}
-            placeholder="123 Main Street"
-          />
-          <InputField
-            label="Address Line 2"
-            icon={Building2}
-            value={profile.address_line2}
-            onChange={(v) => updateField('address_line2', v)}
-            placeholder="Apt 4B, Suite 200, etc."
-          />
-          <div className="grid grid-cols-2 gap-4">
-            <InputField
-              label="City"
-              icon={MapPin}
-              value={profile.city}
-              onChange={(v) => updateField('city', v)}
-              placeholder="New York"
-            />
-            <InputField
-              label="State / Province"
-              icon={MapPin}
-              value={profile.state}
-              onChange={(v) => updateField('state', v)}
-              placeholder="NY"
-            />
+      {step === 'idle' && (
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input type="tel" placeholder="+1 234 567 8900" value={phone} onChange={(e) => setPhone(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-400 outline-none text-sm" />
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <InputField
-              label="ZIP / Postal Code"
-              icon={CreditCard}
-              value={profile.zip_code}
-              onChange={(v) => updateField('zip_code', v)}
-              placeholder="10001"
-            />
-            <InputField
-              label="Country"
-              icon={Globe}
-              value={profile.country}
-              onChange={(v) => updateField('country', v)}
-              placeholder="United States"
-            />
-          </div>
-        </div>
-      </SectionCard>
-    </>
-  );
-}
-
-// ─── Preferences Section ───
-function PreferencesSection({ profile, updateField, theme, toggleTheme }: SectionProps & {
-  theme: string;
-  toggleTheme: () => void;
-}) {
-  return (
-    <>
-      <SectionCard title="Appearance" description="Customize the look and feel">
-        <div className="flex items-center justify-between py-3">
-          <div className="flex items-center gap-3">
-            <Palette className="w-4.5 h-4.5 text-text-tertiary" />
-            <div>
-              <p className="text-[0.875rem] font-medium text-text-primary">Theme</p>
-              <p className="text-[0.75rem] text-text-tertiary mt-0.5">
-                Currently using {theme === 'dark' ? 'dark' : 'light'} mode
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={toggleTheme}
-            className="px-4 py-2 text-[0.8125rem] font-medium rounded-xl bg-black/4 hover:bg-black/6 text-text-primary transition-colors"
-          >
-            Switch to {theme === 'dark' ? 'Light' : 'Dark'}
+          <button onClick={sendOTP} disabled={loading}
+            className="px-4 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors disabled:opacity-50 flex items-center gap-1.5">
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+            Send OTP
           </button>
         </div>
-      </SectionCard>
+      )}
 
-      <SectionCard title="Regional Settings" description="Language, timezone, and date formatting">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">
-              Timezone
-            </label>
-            <div className="relative">
-              <Clock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
-              <select
-                value={profile.timezone}
-                onChange={(e) => updateField('timezone', e.target.value)}
-                className="input-field pl-10 appearance-none cursor-pointer"
-              >
-                <option value="America/New_York">Eastern Time (ET)</option>
-                <option value="America/Chicago">Central Time (CT)</option>
-                <option value="America/Denver">Mountain Time (MT)</option>
-                <option value="America/Los_Angeles">Pacific Time (PT)</option>
-                <option value="America/Anchorage">Alaska Time (AKT)</option>
-                <option value="Pacific/Honolulu">Hawaii Time (HT)</option>
-                <option value="Europe/London">GMT / London</option>
-                <option value="Europe/Paris">Central European (CET)</option>
-                <option value="Europe/Helsinki">Eastern European (EET)</option>
-                <option value="Asia/Dubai">Gulf Standard (GST)</option>
-                <option value="Asia/Kolkata">India Standard (IST)</option>
-                <option value="Asia/Shanghai">China Standard (CST)</option>
-                <option value="Asia/Tokyo">Japan Standard (JST)</option>
-                <option value="Australia/Sydney">Australian Eastern (AEST)</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">
-              Language
-            </label>
-            <div className="relative">
-              <Languages className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
-              <select
-                value={profile.language}
-                onChange={(e) => updateField('language', e.target.value)}
-                className="input-field pl-10 appearance-none cursor-pointer"
-              >
-                <option value="en">English</option>
-                <option value="es">Español</option>
-                <option value="fr">Français</option>
-                <option value="de">Deutsch</option>
-                <option value="ja">日本語</option>
-                <option value="zh">中文</option>
-                <option value="ko">한국어</option>
-                <option value="pt">Português</option>
-                <option value="hi">हिन्दी</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-[0.8125rem] font-medium text-text-primary mb-1.5">
-              Date Format
-            </label>
-            <div className="relative">
-              <Clock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
-              <select
-                value={profile.date_format}
-                onChange={(e) => updateField('date_format', e.target.value)}
-                className="input-field pl-10 appearance-none cursor-pointer"
-              >
-                <option value="MM/DD/YYYY">MM/DD/YYYY</option>
-                <option value="DD/MM/YYYY">DD/MM/YYYY</option>
-                <option value="YYYY-MM-DD">YYYY-MM-DD</option>
-                <option value="DD.MM.YYYY">DD.MM.YYYY</option>
-              </select>
-            </div>
-          </div>
+      {step === 'verify' && (
+        <div className="flex gap-2">
+          <input type="text" placeholder="Enter 6-digit code" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+            className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-400 outline-none text-sm text-center tracking-widest" />
+          <button onClick={verifyOTP} disabled={loading}
+            className="px-4 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 disabled:opacity-50 flex items-center gap-1.5">
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+            Verify
+          </button>
         </div>
-      </SectionCard>
-    </>
-  );
-}
+      )}
 
-// ─── Notifications Section ───
-function NotificationsSection({ profile, updateField }: SectionProps) {
-  return (
-    <>
-      <SectionCard title="Email Notifications" description="Control which emails you receive">
-        <div className="divide-y divide-black/4">
-          <ToggleSwitch
-            enabled={profile.email_notifications}
-            onChange={(v) => updateField('email_notifications', v)}
-            label="Email Notifications"
-            description="Receive email updates about your tasks and activity"
-          />
-          <ToggleSwitch
-            enabled={profile.weekly_summary}
-            onChange={(v) => updateField('weekly_summary', v)}
-            label="Weekly Summary"
-            description="Get a weekly recap of your productivity and tasks"
-          />
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Push Notifications" description="Alerts shown in your browser or device">
-        <div className="divide-y divide-black/4">
-          <ToggleSwitch
-            enabled={profile.push_notifications}
-            onChange={(v) => updateField('push_notifications', v)}
-            label="Push Notifications"
-            description="Show desktop or mobile push notifications"
-          />
-          <ToggleSwitch
-            enabled={profile.task_reminders}
-            onChange={(v) => updateField('task_reminders', v)}
-            label="Task Reminders"
-            description="Remind you before tasks are due"
-          />
-          <ToggleSwitch
-            enabled={profile.friend_requests}
-            onChange={(v) => updateField('friend_requests', v)}
-            label="Friend Requests"
-            description="Notify when someone sends you a friend request"
-          />
-          <ToggleSwitch
-            enabled={profile.message_notifications}
-            onChange={(v) => updateField('message_notifications', v)}
-            label="Messages"
-            description="Notify when you receive a new message"
-          />
-        </div>
-      </SectionCard>
-    </>
-  );
-}
-
-// ─── Security Section ───
-function SecuritySection({ passwords, setPasswords, changingPassword, onChangePassword, userEmail }: {
-  passwords: { current: string; new: string; confirm: string };
-  setPasswords: (p: { current: string; new: string; confirm: string }) => void;
-  changingPassword: boolean;
-  onChangePassword: () => void;
-  userEmail: string;
-}) {
-  return (
-    <>
-      <SectionCard title="Change Password" description="Update your account password">
-        <div className="space-y-4 max-w-md">
-          <InputField
-            label="Current Password"
-            icon={Lock}
-            value={passwords.current}
-            onChange={(v) => setPasswords({ ...passwords, current: v })}
-            type="password"
-            placeholder="Enter current password"
-          />
-          <InputField
-            label="New Password"
-            icon={Lock}
-            value={passwords.new}
-            onChange={(v) => setPasswords({ ...passwords, new: v })}
-            type="password"
-            placeholder="At least 6 characters"
-          />
-          <InputField
-            label="Confirm New Password"
-            icon={Lock}
-            value={passwords.confirm}
-            onChange={(v) => setPasswords({ ...passwords, confirm: v })}
-            type="password"
-            placeholder="Re-enter new password"
-          />
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={onChangePassword}
-            disabled={changingPassword || !passwords.new || !passwords.confirm}
-            className="btn-primary flex items-center gap-2 disabled:opacity-50"
-          >
-            {changingPassword ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Lock className="w-4 h-4" />
-            )}
-            {changingPassword ? 'Updating...' : 'Update Password'}
-          </motion.button>
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Account" description="Manage your account settings">
-        <div className="space-y-4">
-          <div className="flex items-center justify-between py-3">
-            <div className="flex items-center gap-3">
-              <Mail className="w-4.5 h-4.5 text-text-tertiary" />
-              <div>
-                <p className="text-[0.875rem] font-medium text-text-primary">Email Address</p>
-                <p className="text-[0.75rem] text-text-tertiary">{userEmail}</p>
-              </div>
-            </div>
-            <span className="text-[0.75rem] text-primary-600 font-medium bg-primary-50 px-2.5 py-1 rounded-lg">
-              Verified
-            </span>
-          </div>
-
-          <div className="pt-4 border-t border-black/4">
-            <h4 className="text-[0.875rem] font-medium text-red-600 mb-1">Danger Zone</h4>
-            <p className="text-[0.75rem] text-text-tertiary mb-3">
-              Once you delete your account, there is no going back.
-            </p>
-            <button className="px-4 py-2 text-[0.8125rem] font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-xl transition-colors">
-              Delete Account
-            </button>
-          </div>
-        </div>
-      </SectionCard>
-    </>
+      {step === 'done' && <p className="text-sm text-emerald-600">Phone number verified successfully!</p>}
+      <div id="recaptcha-settings" ref={containerRef} />
+    </div>
   );
 }

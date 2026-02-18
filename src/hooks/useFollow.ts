@@ -1,320 +1,133 @@
-import { useEffect, useState, useCallback } from 'react';
-import toast from 'react-hot-toast';
-import { supabase } from '../lib/supabase';
-import { useAppStore } from '../store/appStore';
+import { useState, useEffect, useCallback } from 'react';
+import { db } from '../lib/firebase';
+import { auth } from '../lib/firebase';
+import {
+  collection, query, where, getDocs,
+} from 'firebase/firestore';
 import { FollowService } from '../services/followService';
-import type {
-  Follow,
-  FollowCounts,
-  FollowRelationship,
-  UserProfile,
-} from '../types/database.types';
+import { FriendService } from '../services/friendService';
+import type { Follow, FollowCounts, FollowRelationship, UserProfile } from '../types/database.types';
 
-// ═══════════════════════════════════════════
-// useFollow – manages follow state for a target user
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// Follow hooks – Firestore only
+// ═══════════════════════════════════════════════════════
+
+function uid() { return auth.currentUser?.uid ?? null; }
+
+// ─── useFollow ───
+// For a single target user – returns relationship + actions
+
 export function useFollow(targetUserId: string | null) {
   const [relationship, setRelationship] = useState<FollowRelationship>('none');
-  const [outgoingFollow, setOutgoingFollow] = useState<Follow | null>(null);
-  const [incomingFollow, setIncomingFollow] = useState<Follow | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
-  const user = useAppStore((s) => s.user);
+  const userId = uid();
 
-  const loadRelationship = useCallback(async () => {
-    if (!targetUserId || !user) {
-      setRelationship('none');
-      return;
-    }
-    setLoading(true);
+  const refresh = useCallback(async () => {
+    if (!userId || !targetUserId || userId === targetUserId) { setRelationship('none'); setLoading(false); return; }
     try {
-      const result = await FollowService.getFollowRelationship(targetUserId);
-      setRelationship(result.relationship);
-      setOutgoingFollow(result.outgoingFollow);
-      setIncomingFollow(result.incomingFollow);
-    } catch (e) {
-      console.warn('Failed to load follow relationship:', e);
-    } finally {
-      setLoading(false);
-    }
-  }, [targetUserId, user]);
+      const rel = await FollowService.getFollowRelationship(targetUserId);
+      setRelationship(rel);
+    } catch { setRelationship('none'); }
+    setLoading(false);
+  }, [userId, targetUserId]);
 
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Listen for cross-hook changes
   useEffect(() => {
-    loadRelationship();
-  }, [loadRelationship]);
-
-  // Real-time subscription for follow changes
-  useEffect(() => {
-    if (!targetUserId || !user) return;
-
-    const channel = supabase
-      .channel(`follow-rel:${user.id}:${targetUserId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'follows' },
-        (payload) => {
-          const row = payload.new as Follow | undefined;
-          const oldRow = payload.old as Follow | undefined;
-          const relevantIds = [user.id, targetUserId];
-          const isRelevant =
-            (row && relevantIds.includes(row.follower_id) && relevantIds.includes(row.following_id)) ||
-            (oldRow && relevantIds.includes(oldRow.follower_id) && relevantIds.includes(oldRow.following_id));
-          if (isRelevant) {
-            loadRelationship();
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [targetUserId, user, loadRelationship]);
-
-  // Local change subscription – instant sync across hooks on same client
-  useEffect(() => {
-    return FollowService.subscribeToChanges(loadRelationship);
-  }, [loadRelationship]);
+    const unsub = FollowService.subscribeToChanges(() => refresh());
+    return unsub;
+  }, [refresh]);
 
   const follow = useCallback(async () => {
     if (!targetUserId) return;
     setActionLoading(true);
-    try {
-      const result = await FollowService.followUser(targetUserId);
-      if (result) {
-        // Optimistic update
-        if (result.status === 'requested') {
-          setRelationship('requested');
-          toast.success('Follow request sent');
-        } else {
-          setRelationship('following');
-          toast.success('Now following!');
-        }
-        setOutgoingFollow(result);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to follow user';
-      toast.error(msg);
-    } finally {
-      setActionLoading(false);
-    }
-  }, [targetUserId]);
+    try { await FollowService.followUser(targetUserId); await refresh(); } finally { setActionLoading(false); }
+  }, [targetUserId, refresh]);
 
   const unfollow = useCallback(async () => {
     if (!targetUserId) return;
     setActionLoading(true);
-    try {
-      await FollowService.unfollowUser(targetUserId);
-      setRelationship(incomingFollow?.status === 'accepted' ? 'follower' : 'none');
-      setOutgoingFollow(null);
-      toast.success('Unfollowed');
-    } catch (e) {
-      toast.error('Failed to unfollow');
-    } finally {
-      setActionLoading(false);
-    }
-  }, [targetUserId, incomingFollow]);
+    try { await FollowService.unfollowUser(targetUserId); await refresh(); } finally { setActionLoading(false); }
+  }, [targetUserId, refresh]);
 
   const cancelRequest = useCallback(async () => {
-    if (!outgoingFollow) return;
+    if (!targetUserId) return;
     setActionLoading(true);
-    try {
-      await FollowService.cancelFollowRequest(outgoingFollow.id);
-      setRelationship('none');
-      setOutgoingFollow(null);
-      toast.success('Follow request cancelled');
-    } catch (e) {
-      toast.error('Failed to cancel request');
-    } finally {
-      setActionLoading(false);
-    }
-  }, [outgoingFollow]);
-
-  const acceptRequest = useCallback(async () => {
-    if (!incomingFollow) return;
-    setActionLoading(true);
-    try {
-      await FollowService.acceptFollowRequest(incomingFollow.id);
-      setRelationship(outgoingFollow?.status === 'accepted' ? 'mutual' : 'follower');
-      setIncomingFollow({ ...incomingFollow, status: 'accepted' });
-      toast.success('Follow request accepted');
-    } catch (e) {
-      toast.error('Failed to accept request');
-    } finally {
-      setActionLoading(false);
-    }
-  }, [incomingFollow, outgoingFollow]);
-
-  const rejectRequest = useCallback(async () => {
-    if (!incomingFollow) return;
-    setActionLoading(true);
-    try {
-      await FollowService.rejectFollowRequest(incomingFollow.id);
-      setRelationship(outgoingFollow?.status === 'accepted' ? 'following' : 'none');
-      setIncomingFollow(null);
-      toast.success('Follow request rejected');
-    } catch (e) {
-      toast.error('Failed to reject request');
-    } finally {
-      setActionLoading(false);
-    }
-  }, [incomingFollow, outgoingFollow]);
+    try { await FollowService.cancelFollowRequest(targetUserId); await refresh(); } finally { setActionLoading(false); }
+  }, [targetUserId, refresh]);
 
   const block = useCallback(async () => {
     if (!targetUserId) return;
     setActionLoading(true);
-    try {
-      await FollowService.blockUser(targetUserId);
-      setRelationship('blocked');
-      setOutgoingFollow(null);
-      setIncomingFollow(null);
-      toast.success('User blocked');
-    } catch (e) {
-      toast.error('Failed to block user');
-    } finally {
-      setActionLoading(false);
-    }
-  }, [targetUserId]);
+    try { await FollowService.blockUser(targetUserId); await refresh(); } finally { setActionLoading(false); }
+  }, [targetUserId, refresh]);
 
   const unblock = useCallback(async () => {
     if (!targetUserId) return;
     setActionLoading(true);
-    try {
-      await FollowService.unblockUser(targetUserId);
-      setRelationship('none');
-      toast.success('User unblocked');
-    } catch (e) {
-      toast.error('Failed to unblock user');
-    } finally {
-      setActionLoading(false);
-    }
-  }, [targetUserId]);
+    try { await FollowService.unblockUser(targetUserId); await refresh(); } finally { setActionLoading(false); }
+  }, [targetUserId, refresh]);
 
-  return {
-    relationship,
-    outgoingFollow,
-    incomingFollow,
-    loading,
-    actionLoading,
-    follow,
-    unfollow,
-    cancelRequest,
-    acceptRequest,
-    rejectRequest,
-    block,
-    unblock,
-    refresh: loadRelationship,
-  };
+  const removeFollower = useCallback(async () => {
+    if (!targetUserId) return;
+    setActionLoading(true);
+    try { await FollowService.removeFollower(targetUserId); await refresh(); } finally { setActionLoading(false); }
+  }, [targetUserId, refresh]);
+
+  return { relationship, loading, actionLoading, follow, unfollow, cancelRequest, block, unblock, removeFollower, refresh };
 }
 
-// ═══════════════════════════════════════════
-// useFollowCounts – real-time follower/following counts
-// ═══════════════════════════════════════════
+// ─── useFollowCounts ───
+
 export function useFollowCounts(userId: string | null) {
   const [counts, setCounts] = useState<FollowCounts>({ followers: 0, following: 0 });
   const [loading, setLoading] = useState(true);
 
-  const loadCounts = useCallback(async () => {
-    if (!userId) return;
-    setLoading(true);
+  const refresh = useCallback(async () => {
+    if (!userId) { setCounts({ followers: 0, following: 0 }); setLoading(false); return; }
     try {
       const c = await FollowService.getFollowCounts(userId);
       setCounts(c);
-    } catch (e) {
-      console.warn('Failed to load follow counts:', e);
-    } finally {
-      setLoading(false);
-    }
+    } catch { /* */ }
+    setLoading(false);
   }, [userId]);
 
+  useEffect(() => { refresh(); }, [refresh]);
+
   useEffect(() => {
-    loadCounts();
-  }, [loadCounts]);
+    const unsub = FollowService.subscribeToChanges(() => refresh());
+    return unsub;
+  }, [refresh]);
 
-  // Real-time subscription
-  useEffect(() => {
-    if (!userId) return;
-
-    const channel = supabase
-      .channel(`follow-counts:${userId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'follows' },
-        (payload) => {
-          const row = (payload.new || payload.old) as Follow | undefined;
-          if (row && (row.follower_id === userId || row.following_id === userId)) {
-            loadCounts();
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [userId, loadCounts]);
-
-  // Local change subscription – instant sync across hooks
-  useEffect(() => {
-    return FollowService.subscribeToChanges(loadCounts);
-  }, [loadCounts]);
-
-  return { counts, loading, refresh: loadCounts };
+  return { counts, loading, refresh };
 }
 
-// ═══════════════════════════════════════════
-// useFollowRequests – pending follow requests management
-// ═══════════════════════════════════════════
+// ─── useFollowRequests ───
+
 export function useFollowRequests() {
   const [pendingRequests, setPendingRequests] = useState<Follow[]>([]);
   const [sentRequests, setSentRequests] = useState<Follow[]>([]);
   const [loading, setLoading] = useState(true);
-  const user = useAppStore((s) => s.user);
 
   const refresh = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
     try {
       const [pending, sent] = await Promise.all([
-        FollowService.getPendingFollowRequests(),
+        FollowService.getFollowRequests(),
         FollowService.getSentFollowRequests(),
       ]);
       setPendingRequests(pending);
       setSentRequests(sent);
-    } catch (e) {
-      console.warn('Failed to load follow requests:', e);
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // Real-time subscription for follow requests
-  useEffect(() => {
-    if (!user) return;
-
-    const channel = supabase
-      .channel(`follow-requests:${user.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'follows' },
-        () => {
-          refresh();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user, refresh]);
-
-  // Local change subscription – instant sync across hooks
-  useEffect(() => {
-    return FollowService.subscribeToChanges(refresh);
+    const unsub = FollowService.subscribeToChanges(() => refresh());
+    return unsub;
   }, [refresh]);
 
   const accept = useCallback(async (followId: string) => {
@@ -327,183 +140,122 @@ export function useFollowRequests() {
     await refresh();
   }, [refresh]);
 
-  const cancel = useCallback(async (followId: string) => {
-    await FollowService.cancelFollowRequest(followId);
+  const cancel = useCallback(async (targetIdOrFollowId: string) => {
+    // targetIdOrFollowId can be either the target user's ID or the follow document ID
+    await FollowService.cancelFollowRequest(targetIdOrFollowId);
     await refresh();
   }, [refresh]);
 
-  return {
-    pendingRequests,
-    sentRequests,
-    loading,
-    accept,
-    reject,
-    cancel,
-    refresh,
-  };
+  return { pendingRequests, sentRequests, loading, accept, reject, cancel, refresh };
 }
 
-// ═══════════════════════════════════════════
-// useFollowersList – paginated followers/following lists
-// ═══════════════════════════════════════════
+// ─── useFollowersList ───
+
 export function useFollowersList(userId: string | null, type: 'followers' | 'following') {
   const [list, setList] = useState<Follow[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
-  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(true);
-  const pageSize = 50;
+  const [totalCount, setTotalCount] = useState(0);
 
-  const loadPage = useCallback(async (pageNum: number, append = false) => {
-    if (!userId) return;
-    setLoading(true);
+  const refresh = useCallback(async () => {
+    if (!userId) { setList([]); setLoading(false); return; }
     try {
-      const result = type === 'followers'
-        ? await FollowService.getFollowers(userId, pageNum, pageSize)
-        : await FollowService.getFollowing(userId, pageNum, pageSize);
-
-      if (append) {
-        setList((prev) => [...prev, ...result.data]);
+      // We need to query for the specific user, not just current user
+      // So we query the follows collection directly
+      const col = collection(db, 'follows');
+      let q;
+      if (type === 'followers') {
+        q = query(col, where('following_id', '==', userId), where('status', '==', 'accepted'));
       } else {
-        setList(result.data);
+        q = query(col, where('follower_id', '==', userId), where('status', '==', 'accepted'));
       }
-      setTotalCount(result.count);
-      setHasMore(result.data.length === pageSize);
-    } catch (e) {
-      console.warn('Failed to load followers list:', e);
-    } finally {
-      setLoading(false);
-    }
+      const snap = await getDocs(q);
+      const follows = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Follow, 'id'>) })) as Follow[];
+
+      // Attach profiles
+      const profileIds = follows.map((f) => type === 'followers' ? f.follower_id : f.following_id);
+      const profiles = await FriendService.getProfiles(profileIds);
+      const map = new Map(profiles.map((p) => [p.id, p]));
+      follows.forEach((f) => {
+        if (type === 'followers') {
+          const profileId = f.follower_id;
+          const profile = map.get(profileId) || {
+            id: profileId, email: '', username: null, full_name: null,
+            avatar_url: null, status: 'offline' as const, last_seen: new Date().toISOString(),
+            is_private: false, bio: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          };
+          if (!profile.id) profile.id = profileId;
+          f.follower = profile;
+        } else {
+          const profileId = f.following_id;
+          const profile = map.get(profileId) || {
+            id: profileId, email: '', username: null, full_name: null,
+            avatar_url: null, status: 'offline' as const, last_seen: new Date().toISOString(),
+            is_private: false, bio: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          };
+          if (!profile.id) profile.id = profileId;
+          f.following = profile;
+        }
+      });
+
+      setList(follows);
+      setTotalCount(follows.length);
+    } catch (e) { console.error(e); }
+    setLoading(false);
   }, [userId, type]);
 
+  useEffect(() => { refresh(); }, [refresh]);
+
   useEffect(() => {
-    setPage(0);
-    loadPage(0);
-  }, [loadPage]);
+    const unsub = FollowService.subscribeToChanges(() => refresh());
+    return unsub;
+  }, [refresh]);
 
-  // Real-time subscription — auto-refresh when follows table changes
-  useEffect(() => {
-    if (!userId) return;
-
-    const channel = supabase
-      .channel(`follow-list:${userId}:${type}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'follows' },
-        (payload) => {
-          const row = (payload.new || payload.old) as Follow | undefined;
-          if (row && (row.follower_id === userId || row.following_id === userId)) {
-            // Reset to page 0 and reload
-            setPage(0);
-            loadPage(0);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [userId, type, loadPage]);
-
-  // Local change subscription – instant sync across hooks
-  useEffect(() => {
-    return FollowService.subscribeToChanges(() => {
-      setPage(0);
-      loadPage(0);
-    });
-  }, [loadPage]);
-
-  const loadMore = useCallback(() => {
-    if (!hasMore || loading) return;
-    const nextPage = page + 1;
-    setPage(nextPage);
-    loadPage(nextPage, true);
-  }, [page, hasMore, loading, loadPage]);
-
-  const refresh = useCallback(() => {
-    setPage(0);
-    loadPage(0);
-  }, [loadPage]);
+  const hasMore = false;
+  const loadMore = () => {};
 
   return { list, totalCount, loading, hasMore, loadMore, refresh };
 }
 
-// ═══════════════════════════════════════════
-// useFollowSearch – search users with follow state enrichment
-// ═══════════════════════════════════════════
+// ─── useFollowSearch ───
+
 export function useFollowSearch() {
   const [results, setResults] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(false);
-  const user = useAppStore((s) => s.user);
 
-  const search = useCallback(async (query: string) => {
-    if (!query || query.length < 2 || !user) {
-      setResults([]);
-      return;
-    }
+  const search = useCallback(async (searchQuery: string) => {
+    const term = searchQuery.trim();
+    if (!term) { setResults([]); return; }
     setLoading(true);
     try {
-      const users = await FollowService.searchUsersForFollow(query);
+      const users = await FriendService.searchUsers(term);
       setResults(users);
-    } catch (e) {
-      console.warn('Follow search error:', e);
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+    } catch (e) { console.error(e); setResults([]); }
+    setLoading(false);
+  }, []);
 
-  return { results, loading, search, setResults };
+  return { results, loading, search };
 }
 
-// ═══════════════════════════════════════════
-// useFollowBackSuggestions – followers you don't follow back
-// ═══════════════════════════════════════════
+// ─── useFollowBackSuggestions ───
+
 export function useFollowBackSuggestions() {
   const [list, setList] = useState<Follow[]>([]);
   const [loading, setLoading] = useState(true);
-  const user = useAppStore((s) => s.user);
 
-  const load = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
+  const refresh = useCallback(async () => {
     try {
       const suggestions = await FollowService.getFollowBackSuggestions();
       setList(suggestions);
-    } catch (e) {
-      console.warn('Follow-back suggestions error:', e);
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    const unsub = FollowService.subscribeToChanges(() => refresh());
+    return unsub;
+  }, [refresh]);
 
-  // Real-time: refresh when follows change
-  useEffect(() => {
-    if (!user) return;
-    const channel = supabase
-      .channel(`follow-back:${user.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'follows' },
-        (payload) => {
-          const row = (payload.new || payload.old) as Follow | undefined;
-          if (row && (row.follower_id === user.id || row.following_id === user.id)) {
-            load();
-          }
-        }
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [user, load]);
-
-  // Local change subscription
-  useEffect(() => {
-    return FollowService.subscribeToChanges(() => { load(); });
-  }, [load]);
-
-  return { list, loading, refresh: load };
+  return { list, loading, refresh };
 }

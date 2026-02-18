@@ -282,7 +282,7 @@ export const FriendsPage = () => {
                 </div>
                 <div className="px-4 py-3 flex gap-4 overflow-x-auto">
                   {followingList.slice(0, 8).map((f) => {
-                    const profile = (f as Record<string, unknown>).following as UserProfile | undefined;
+                    const profile = (f as unknown as Record<string, unknown>).following as UserProfile | undefined;
                     if (!profile) return null;
                     const name = profile.full_name || profile.username || profile.email?.split('@')[0] || '?';
                     return (
@@ -407,7 +407,7 @@ export const FriendsPage = () => {
                           <p className="text-xs text-gray-400 truncate">{displayUsername}</p>
                         </div>
                         <button
-                          onClick={() => cancelFollowReq(req.id)}
+                          onClick={() => cancelFollowReq(req.following_id)}
                           className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gray-50 border border-gray-200 text-gray-500 text-[13px] font-semibold hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors"
                         >
                           <X className="w-3 h-3" /> Cancel
@@ -446,7 +446,7 @@ export const FriendsPage = () => {
               ) : (
                 <div className="divide-y divide-gray-50">
                   {followingList.map((f) => {
-                    const profile = (f as Record<string, unknown>).following as UserProfile | undefined;
+                    const profile = (f as unknown as Record<string, unknown>).following as UserProfile | undefined;
                     const name = profile?.full_name || profile?.username || profile?.email?.split('@')[0] || 'Unknown';
                     const initial = name[0]?.toUpperCase() || '?';
                     const displayUsername = profile?.username ? `@${profile.username}` : profile?.email || '';
@@ -523,11 +523,13 @@ function SearchResultItem({
   user: UserProfile;
   onMessage: (userId: string) => void;
 }) {
-  const name = user.full_name || user.username || user.email.split('@')[0];
-  const initial = (user.full_name || user.username || user.email)[0]?.toUpperCase() || '?';
-  const displayUsername = user.username ? `@${user.username}` : user.email;
-  const { relationship } = useFollow(user.id);
+  const name = user?.full_name || user?.username || user?.email?.split('@')[0] || 'Unknown User';
+  const initial = name[0]?.toUpperCase() || '?';
+  const displayUsername = user?.username ? `@${user.username}` : (user?.email || 'No email');
+  const { relationship } = useFollow(user?.id || '');
   const canMessage = relationship === 'following' || relationship === 'mutual';
+
+  if (!user?.id) return null;
 
   return (
     <div className="flex items-center gap-3.5 px-5 py-3.5 hover:bg-gray-50/60 transition-colors">

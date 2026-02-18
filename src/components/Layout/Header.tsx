@@ -1,8 +1,10 @@
-import { Search, Command, Mail, UserPlus } from 'lucide-react';
+import { Search, Command, Mail, UserPlus, LogOut } from 'lucide-react';
 import { useAppStore } from '../../store/appStore';
 import { useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { NotificationBell } from './NotificationBell';
+import { AuthService } from '../../services/authService';
+import toast from 'react-hot-toast';
 
 const headerTabs = [
   { label: 'Dashboard', path: '/' },
@@ -17,6 +19,15 @@ export const Header = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const location = useLocation();
   const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    try {
+      await AuthService.signOut();
+      toast.success('Logged out successfully');
+    } catch (error) {
+      toast.error('Failed to logout');
+    }
+  };
 
   return (
     <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8">
@@ -98,6 +109,15 @@ export const Header = () => {
           </div>
           <div className="w-2 h-2 rounded-full bg-emerald-400 -ml-3 mb-3 border border-white"></div>
         </div>
+
+        {/* Logout Button */}
+        <button
+          onClick={handleLogout}
+          className="p-2 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-all duration-200"
+          title="Sign Out"
+        >
+          <LogOut className="w-4.5 h-4.5" />
+        </button>
       </div>
     </header>
   );

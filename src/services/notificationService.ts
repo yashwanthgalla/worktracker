@@ -1,245 +1,302 @@
-import { supabase } from '../lib/supabase';
-import { EmailTemplates } from './emailTemplates';
-import { isBefore, isToday, addDays, startOfDay, format } from 'date-fns';
+import { auth } from '../lib/firebase';
+import { db } from '../lib/firebase';
+import {
+  collection, doc, addDoc, getDocs, updateDoc, getDoc, setDoc, query, orderBy, limit, where,
+  deleteDoc,
+} from 'firebase/firestore';
 import type { Task } from '../types/database.types';
+import { dueDateReminderEmail, taskCompletedEmail, dailyDigestEmail } from './emailTemplates';
+
+// ═══════════════════════════════════════════════════════
+// Notification Service – Firebase Firestore
+// Collections:
+//   users/{uid}/notification_log/{id}
+//   users/{uid}/notification_preferences  (single doc)
+//   users/{uid}/notifications/{id}  (realtime_notifications)
+// ═══════════════════════════════════════════════════════
+
+function uid() {
+  const u = auth.currentUser?.uid;
+  if (!u) throw new Error('Not authenticated');
+  return u;
+}
+
+function notifLogCol() { return collection(db, 'users', uid(), 'notification_log'); }
+function notifPrefsDoc() { return doc(db, 'users', uid(), 'notification_preferences', 'prefs'); }
+function realtimeNotifCol() { return collection(db, 'users', uid(), 'notifications'); }
 
 const APP_URL = window.location.origin;
 
-// ═══════════════════════════════════════════
-// Email Notification Service
-// Checks tasks and triggers email notifications
-// for due dates, completions, and digests.
-// ═══════════════════════════════════════════
+// ─── Notification Preferences ───
 
-/** Get user email from auth session */
-async function getCurrentUserEmail(): Promise<{ email: string; name: string } | null> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user?.email) return null;
-  return {
-    email: user.email,
-    name: user.user_metadata?.full_name || user.email.split('@')[0],
-  };
+export interface NotificationPreferences {
+  email_due_reminders: boolean;
+  email_task_completed: boolean;
+  email_daily_digest: boolean;
+  email_friend_requests: boolean;
+  email_messages: boolean;
+  push_enabled: boolean;
+  quiet_hours_start: string | null; // HH:mm
+  quiet_hours_end: string | null;
+  updated_at: string;
 }
 
-/** Send email via Supabase Edge Function (or fallback to client-side storage for demo) */
-async function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
+const DEFAULT_PREFS: NotificationPreferences = {
+  email_due_reminders: true,
+  email_task_completed: true,
+  email_daily_digest: true,
+  email_friend_requests: true,
+  email_messages: true,
+  push_enabled: false,
+  quiet_hours_start: null,
+  quiet_hours_end: null,
+  updated_at: new Date().toISOString(),
+};
+
+export async function getNotificationPreferences(): Promise<NotificationPreferences> {
   try {
-    // Try calling the Supabase Edge Function
-    const { data, error } = await supabase.functions.invoke('send-email', {
-      body: { to, subject, html },
-    });
-
-    if (error) {
-      console.warn('Edge Function not available, storing notification locally:', error.message);
-      storeNotificationLocally(to, subject, html);
-      return false;
-    }
-
-    return data?.success || false;
-  } catch (err) {
-    console.warn('Email sending failed, storing locally:', err);
-    storeNotificationLocally(to, subject, html);
-    return false;
+    const snap = await getDoc(notifPrefsDoc());
+    if (snap.exists()) return snap.data() as NotificationPreferences;
+    // Create default prefs
+    await setDoc(notifPrefsDoc(), DEFAULT_PREFS);
+    return { ...DEFAULT_PREFS };
+  } catch {
+    return { ...DEFAULT_PREFS };
   }
 }
 
-/** Store notification locally when edge function is unavailable */
-function storeNotificationLocally(to: string, subject: string, html: string) {
-  const notifications = JSON.parse(localStorage.getItem('worktracker_notifications') || '[]');
-  notifications.push({
-    id: crypto.randomUUID(),
-    to,
-    subject,
-    html,
-    createdAt: new Date().toISOString(),
-    read: false,
-  });
-  // Keep only last 50
-  if (notifications.length > 50) notifications.splice(0, notifications.length - 50);
-  localStorage.setItem('worktracker_notifications', JSON.stringify(notifications));
+export async function updateNotificationPreferences(updates: Partial<NotificationPreferences>): Promise<NotificationPreferences> {
+  const current = await getNotificationPreferences();
+  const merged = { ...current, ...updates, updated_at: new Date().toISOString() };
+  await setDoc(notifPrefsDoc(), merged);
+  return merged;
 }
 
-/** Get locally stored notifications */
-export function getStoredNotifications(): Array<{
+// ─── Notification Log (Firestore) ───
+
+export interface NotificationLogEntry {
   id: string;
-  to: string;
+  type: string;
   subject: string;
-  html: string;
-  createdAt: string;
+  to: string;
+  channel: 'email' | 'push' | 'in_app';
+  status: 'sent' | 'failed' | 'pending';
   read: boolean;
-}> {
-  return JSON.parse(localStorage.getItem('worktracker_notifications') || '[]');
+  created_at: string;
 }
 
-/** Mark notification as read */
-export function markNotificationRead(id: string) {
-  const notifications = getStoredNotifications();
-  const updated = notifications.map((n) => (n.id === id ? { ...n, read: true } : n));
-  localStorage.setItem('worktracker_notifications', JSON.stringify(updated));
-}
-
-/** Clear all notifications */
-export function clearNotifications() {
-  localStorage.removeItem('worktracker_notifications');
-}
-
-// ─── Check & Send Logic ──────────────────────────
-
-/** Check for tasks approaching or past due and send reminder */
-export async function checkAndSendDueReminders(tasks: Task[]): Promise<void> {
-  const user = await getCurrentUserEmail();
-  if (!user) return;
-
-  const now = startOfDay(new Date());
-  const threeDaysFromNow = addDays(now, 3);
-
-  // Last reminder check timestamp
-  const lastCheck = localStorage.getItem('worktracker_last_due_check');
-  const lastCheckDate = lastCheck ? new Date(lastCheck) : null;
-
-  // Only send once per day
-  if (lastCheckDate && isToday(lastCheckDate)) return;
-
-  const overdue: Array<{ title: string; priority: string; due_date: string; status: 'overdue' }> = [];
-  const dueToday: Array<{ title: string; priority: string; due_date: string; status: 'due_today' }> = [];
-  const upcoming: Array<{ title: string; priority: string; due_date: string; status: 'upcoming' }> = [];
-
-  tasks.forEach((task) => {
-    if (task.status === 'completed' || !task.due_date) return;
-
-    const dueDate = new Date(task.due_date);
-    const formattedDue = format(dueDate, 'MMM d, yyyy');
-
-    if (isBefore(dueDate, now)) {
-      overdue.push({ title: task.title, priority: task.priority, due_date: formattedDue, status: 'overdue' });
-    } else if (isToday(dueDate)) {
-      dueToday.push({ title: task.title, priority: task.priority, due_date: formattedDue, status: 'due_today' });
-    } else if (isBefore(dueDate, threeDaysFromNow)) {
-      upcoming.push({ title: task.title, priority: task.priority, due_date: formattedDue, status: 'upcoming' });
-    }
-  });
-
-  const allNotifiable = [...overdue, ...dueToday, ...upcoming];
-  if (allNotifiable.length === 0) return;
-
-  const html = EmailTemplates.dueDateReminderEmail({
-    userName: user.name,
-    tasks: allNotifiable,
-    appUrl: APP_URL,
-  });
-
-  const count = allNotifiable.length;
-  const subject = overdue.length > 0
-    ? `⚠️ ${overdue.length} overdue task${overdue.length > 1 ? 's' : ''} + ${dueToday.length + upcoming.length} due soon`
-    : `📋 ${count} task${count > 1 ? 's' : ''} due soon — WorkTracker`;
-
-  await sendEmail(user.email, subject, html);
-  localStorage.setItem('worktracker_last_due_check', new Date().toISOString());
-}
-
-/** Send task completion celebration email */
-export async function sendTaskCompletedNotification(
-  completedTask: Task,
-  allTasks: Task[],
-): Promise<void> {
-  const user = await getCurrentUserEmail();
-  if (!user) return;
-
-  // Only send for every 5th task completed to avoid spam, or for high-priority tasks
-  const completedCount = allTasks.filter((t) => t.status === 'completed').length;
-  const isHighPriority = completedTask.priority === 'urgent' || completedTask.priority === 'high';
-  const isMilestone = completedCount % 5 === 0;
-
-  if (!isHighPriority && !isMilestone) return;
-
-  // Calculate streak (consecutive days with completed tasks)
-  const dates = new Set(
-    allTasks
-      .filter((t) => t.completed_at)
-      .map((t) => startOfDay(new Date(t.completed_at!)).toISOString())
-  );
-  let streak = 0;
-  let checkDate = startOfDay(new Date());
-  while (dates.has(checkDate.toISOString())) {
-    streak++;
-    checkDate = addDays(checkDate, -1);
+async function logNotification(type: string, subject: string, to: string, channel: 'email' | 'push' | 'in_app' = 'email') {
+  try {
+    await addDoc(notifLogCol(), {
+      type,
+      subject,
+      to,
+      channel,
+      status: 'sent',
+      read: false,
+      created_at: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.warn('[NotificationService] Failed to log notification:', e);
   }
-
-  const html = EmailTemplates.taskCompletedEmail({
-    userName: user.name,
-    taskTitle: completedTask.title,
-    completedCount,
-    totalTasks: allTasks.length,
-    streak: streak > 1 ? streak : undefined,
-    appUrl: APP_URL,
-  });
-
-  const subject = isMilestone
-    ? `🎉 Milestone! ${completedCount} tasks completed — WorkTracker`
-    : `✅ "${completedTask.title}" completed — WorkTracker`;
-
-  await sendEmail(user.email, subject, html);
 }
 
-/** Send daily digest email */
-export async function sendDailyDigest(
-  tasks: Task[],
-  productivityScore: number,
-  focusMinutes: number,
-): Promise<void> {
-  const user = await getCurrentUserEmail();
-  if (!user) return;
+export async function getNotificationLog(maxItems = 50): Promise<NotificationLogEntry[]> {
+  try {
+    const q = query(notifLogCol(), orderBy('created_at', 'desc'), limit(maxItems));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<NotificationLogEntry, 'id'>) }));
+  } catch {
+    return [];
+  }
+}
 
-  const lastDigest = localStorage.getItem('worktracker_last_digest');
-  const lastDigestDate = lastDigest ? new Date(lastDigest) : null;
-  if (lastDigestDate && isToday(lastDigestDate)) return;
+export async function markNotificationLogRead(id: string) {
+  try {
+    await updateDoc(doc(db, 'users', uid(), 'notification_log', id), { read: true });
+  } catch { /* */ }
+}
 
-  const now = startOfDay(new Date());
-  const tomorrow = addDays(now, 1);
-  const dayAfter = addDays(now, 2);
+export async function clearNotificationLog() {
+  try {
+    const snap = await getDocs(notifLogCol());
+    for (const d of snap.docs) {
+      await deleteDoc(d.ref);
+    }
+  } catch { /* */ }
+}
 
-  const completedToday = tasks.filter(
-    (t) => t.completed_at && isToday(new Date(t.completed_at))
-  ).length;
+// ─── Realtime Notifications (Firestore) ───
 
-  const overdueCount = tasks.filter(
-    (t) => t.due_date && t.status !== 'completed' && isBefore(new Date(t.due_date), now)
-  ).length;
+export async function getRealtimeNotifications(maxItems = 50): Promise<import('../types/database.types').RealtimeNotification[]> {
+  try {
+    const q = query(realtimeNotifCol(), orderBy('created_at', 'desc'), limit(maxItems));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<import('../types/database.types').RealtimeNotification, 'id'>) }));
+  } catch {
+    return [];
+  }
+}
 
-  const upcomingTasks = tasks
-    .filter((t) => {
-      if (!t.due_date || t.status === 'completed') return false;
-      const d = new Date(t.due_date);
-      return isToday(d) ||
-        (isBefore(d, dayAfter) && !isBefore(d, tomorrow));
-    })
+export async function markRealtimeNotificationRead(id: string) {
+  await updateDoc(doc(db, 'users', uid(), 'notifications', id), { read: true });
+}
+
+export async function markAllRealtimeNotificationsRead() {
+  const q = query(realtimeNotifCol(), where('read', '==', false));
+  const snap = await getDocs(q);
+  for (const d of snap.docs) {
+    await updateDoc(d.ref, { read: true });
+  }
+}
+
+export async function deleteRealtimeNotification(id: string) {
+  await deleteDoc(doc(db, 'users', uid(), 'notifications', id));
+}
+
+// ─── Email sending (simulated – logs to Firestore) ───
+
+function getCurrentUserEmail(): string | null {
+  return auth.currentUser?.email ?? null;
+}
+
+function getUserName(): string {
+  return auth.currentUser?.displayName || auth.currentUser?.email?.split('@')[0] || 'there';
+}
+
+async function sendEmail(to: string, subject: string, _html: string) {
+  // In production this would call a cloud function. Log to Firestore.
+  console.log(`[NotificationService] Email to=${to} subject="${subject}"`);
+  await logNotification('email', subject, to, 'email');
+}
+
+// ─── Due Reminders ───
+
+export async function checkAndSendDueReminders(tasks: Task[]) {
+  const email = getCurrentUserEmail();
+  if (!email) return;
+  const lastKey = `worktracker_last_reminder_${email}`;
+  const last = localStorage.getItem(lastKey);
+  const today = new Date().toDateString();
+  if (last === today) return;
+
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(23, 59, 59, 999);
+
+  const dueSoon = tasks.filter((t) => {
+    if (t.status === 'completed' || !t.due_date) return false;
+    const d = t.due_date instanceof Date ? t.due_date : new Date(t.due_date);
+    return d <= tomorrow;
+  });
+
+  if (dueSoon.length === 0) return;
+  const html = dueDateReminderEmail({
+    userName: getUserName(),
+    tasks: dueSoon.map((t) => {
+      const due = t.due_date instanceof Date ? t.due_date : new Date(t.due_date as unknown as string);
+      const isOverdue = due < now;
+      const isToday = due.toDateString() === now.toDateString();
+      return {
+        title: t.title,
+        priority: t.priority,
+        due_date: due.toLocaleDateString(),
+        status: isOverdue ? 'overdue' as const : isToday ? 'due_today' as const : 'upcoming' as const,
+      };
+    }),
+    appUrl: APP_URL,
+  });
+  await sendEmail(email, `⏰ ${dueSoon.length} task(s) due soon`, html);
+  localStorage.setItem(lastKey, today);
+}
+
+// ─── Task Completed ───
+
+export async function sendTaskCompletedNotification(task: Task, allTasks: Task[]) {
+  const email = getCurrentUserEmail();
+  if (!email) return;
+  const totalDone = allTasks.filter((t) => t.status === 'completed').length;
+  const html = taskCompletedEmail({
+    userName: getUserName(),
+    taskTitle: task.title,
+    completedCount: totalDone,
+    totalTasks: allTasks.length,
+    appUrl: APP_URL,
+  });
+  await sendEmail(email, `✅ Task completed: ${task.title}`, html);
+}
+
+// ─── Daily Digest ───
+
+export async function sendDailyDigest(tasks: Task[], score: number, focusMinutes: number) {
+  const email = getCurrentUserEmail();
+  if (!email) return;
+  const now = new Date();
+  const completedToday = tasks.filter((t) => {
+    if (t.status !== 'completed' || !t.completed_at) return false;
+    const d = t.completed_at instanceof Date ? t.completed_at : new Date(t.completed_at as unknown as string);
+    return d.toDateString() === now.toDateString();
+  }).length;
+  const overdueCount = tasks.filter((t) => {
+    if (t.status === 'completed' || !t.due_date) return false;
+    const d = t.due_date instanceof Date ? t.due_date : new Date(t.due_date as unknown as string);
+    return d < now;
+  }).length;
+  const upcoming = tasks
+    .filter((t) => t.status !== 'completed' && t.due_date)
     .slice(0, 5)
     .map((t) => ({
       title: t.title,
       priority: t.priority,
-      due_date: format(new Date(t.due_date!), 'MMM d'),
+      due_date: (t.due_date instanceof Date ? t.due_date : new Date(t.due_date as unknown as string)).toLocaleDateString(),
     }));
-
-  const html = EmailTemplates.dailyDigestEmail({
-    userName: user.name,
-    date: format(new Date(), 'EEEE, MMMM d, yyyy'),
+  const html = dailyDigestEmail({
+    userName: getUserName(),
+    date: now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
     completedToday,
     focusMinutes,
-    productivityScore,
+    productivityScore: score,
     overdueCount,
-    upcomingTasks,
+    upcomingTasks: upcoming,
     appUrl: APP_URL,
   });
-
-  await sendEmail(user.email, `📊 Daily Digest — ${format(new Date(), 'MMM d')}`, html);
-  localStorage.setItem('worktracker_last_digest', new Date().toISOString());
+  await sendEmail(email, '📊 Your daily productivity digest', html);
 }
 
-// Re-export as namespace
+// ─── Stored notification helpers (legacy compat – now backed by Firestore) ───
+
+export function getStoredNotifications(): NotificationLogEntry[] {
+  // Synchronous fallback – real data comes from getNotificationLog()
+  return [];
+}
+
+export function markNotificationRead(id: string) {
+  markNotificationLogRead(id);
+}
+
+export function clearNotifications() {
+  clearNotificationLog();
+}
+
 export const NotificationService = {
+  // Preferences
+  getNotificationPreferences,
+  updateNotificationPreferences,
+  // Notification log
+  getNotificationLog,
+  markNotificationLogRead,
+  clearNotificationLog,
+  // Realtime notifications
+  getRealtimeNotifications,
+  markRealtimeNotificationRead,
+  markAllRealtimeNotificationsRead,
+  deleteRealtimeNotification,
+  // Email triggers
   checkAndSendDueReminders,
   sendTaskCompletedNotification,
   sendDailyDigest,
+  // Legacy compat
   getStoredNotifications,
   markNotificationRead,
   clearNotifications,

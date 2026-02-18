@@ -1,0 +1,113 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── User Profiles ───
+    // Anyone authenticated can read profiles (for search, follow, messaging)
+    // Only the owner can write their own profile
+    match /user_profiles/{userId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // ─── Per-user subcollections ───
+    // Tasks, work sessions, activity logs, AI suggestions,
+    // notification_log, notification_preferences
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Allow other authenticated users to CREATE notifications for a user
+    // (e.g., friend requests, message notifications)
+    match /users/{userId}/notifications/{notifId} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // ─── Friendships ───
+    // Authenticated users can read friendships they're part of
+    // Any authenticated user can create (to send a request)
+    match /friendships/{friendshipId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && (
+        resource.data.requester_id == request.auth.uid ||
+        resource.data.addressee_id == request.auth.uid
+      );
+      allow delete: if request.auth != null && (
+        resource.data.requester_id == request.auth.uid ||
+        resource.data.addressee_id == request.auth.uid
+      );
+    }
+
+    // ─── Follows ───
+    match /follows/{followId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && (
+        resource.data.follower_id == request.auth.uid ||
+        resource.data.following_id == request.auth.uid
+      );
+      allow delete: if request.auth != null && (
+        resource.data.follower_id == request.auth.uid ||
+        resource.data.following_id == request.auth.uid
+      );
+    }
+
+    // ─── Follow History ───
+    match /follow_history/{historyId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+    }
+
+    // ─── User Blocks ───
+    match /user_blocks/{blockId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow delete: if request.auth != null && resource.data.blocker_id == request.auth.uid;
+    }
+
+    // ─── Task Shares ───
+    // Owner or shared-with user can read; owner can create/update/delete
+    match /task_shares/{shareId} {
+      allow read: if request.auth != null && (
+        resource.data.owner_id == request.auth.uid ||
+        resource.data.shared_with_id == request.auth.uid
+      );
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && (
+        resource.data.owner_id == request.auth.uid ||
+        resource.data.shared_with_id == request.auth.uid
+      );
+      allow delete: if request.auth != null &&
+        resource.data.owner_id == request.auth.uid;
+    }
+
+    // ─── Conversations ───
+    match /conversations/{conversationId} {
+      allow read: if request.auth != null && request.auth.uid in resource.data.participants;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && request.auth.uid in resource.data.participants;
+
+      // Conversation Participants subcollection
+      match /participants/{participantId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+        allow update: if request.auth != null && request.auth.uid == participantId;
+        allow delete: if request.auth != null;
+      }
+
+      // Messages subcollection
+      match /messages/{messageId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+        allow update: if request.auth != null && resource.data.sender_id == request.auth.uid;
+        allow delete: if request.auth != null && resource.data.sender_id == request.auth.uid;
+      }
+    }
+  }
+}

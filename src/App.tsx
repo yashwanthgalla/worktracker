@@ -1,144 +1,97 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
-import { AuthService } from './services/authService';
-import { FriendService } from './services/friendService';
-import { useAppStore } from './store/appStore';
+
 import { AuthForm } from './components/Auth/AuthForm';
-import { DashboardLayout } from './components/Layout/DashboardLayout';
+import { DashboardLayout } from './components/Layout';
 import { Dashboard } from './components/Dashboard/Dashboard';
 import { TaskList } from './components/Tasks/TaskList';
-import { FocusTimer } from './components/Timer/FocusTimer';
-import { Analytics } from './components/Analytics/Analytics';
-import { AIInsights } from './components/AI/AIInsights';
 import { CalendarView } from './components/Calendar/CalendarView';
+import { Analytics } from './components/Analytics/Analytics';
+import { FocusTimer } from './components/Timer/FocusTimer';
+import { AIInsights } from './components/AI/AIInsights';
 import { MessagesPage } from './components/Messages/MessagesPage';
 import { FriendsPage } from './components/Friends/FriendsPage';
 import { SettingsPage } from './components/Settings/SettingsPage';
-import { Loader2 } from 'lucide-react';
+
+import { AuthService } from './services/authService';
+import { FriendService } from './services/friendService';
+import { useAppStore } from './store/appStore';
+
+import './App.css';
 
 const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1,
-      staleTime: 5 * 60 * 1000,
-    },
-  },
+  defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
 });
 
-function App() {
-  const [loading, setLoading] = useState(true);
+function AppContent() {
   const { user, setUser } = useAppStore();
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check for existing session
-    const checkSession = async () => {
-      try {
-        const currentUser = await AuthService.getCurrentUser();
-        setUser(currentUser);
-      } catch {
-        setUser(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkSession();
-
-    // Subscribe to auth changes
-    const unsubscribe = AuthService.onAuthStateChange((user) => {
-      setUser(user);
-      // Ensure user profile exists in user_profiles table for search/messaging
-      if (user) {
-        FriendService.ensureProfile();
-      }
+    // Check initial session
+    AuthService.getCurrentUser().then((u) => {
+      setUser(u);
+      if (u) FriendService.ensureProfile().catch(console.warn);
+      setLoading(false);
     });
 
-    return () => unsubscribe();
+    // Listen for auth changes
+    const unsub = AuthService.onAuthStateChange((u) => {
+      setUser(u);
+      if (u) FriendService.ensureProfile().catch(console.warn);
+    });
+    return unsub;
   }, [setUser]);
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#f8f9fb] flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-emerald-500 mx-auto mb-3" />
-          <p className="text-gray-400 text-sm font-medium">Loading...</p>
+      <div className="min-h-screen flex items-center justify-center bg-[#f8f9fb]">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-linear-to-br from-emerald-400 to-teal-500 flex items-center justify-center animate-pulse">
+            <span className="text-white font-bold text-xl">W</span>
+          </div>
+          <div className="text-gray-400 text-sm">Loading...</div>
         </div>
       </div>
     );
   }
 
-  if (!user) {
-    return (
-      <>
-        <AuthForm onSuccess={() => {}} />
+  if (!user) return <AuthForm />;
+
+  return (
+    <DashboardLayout>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/tasks" element={<TaskList />} />
+        <Route path="/calendar" element={<CalendarView />} />
+        <Route path="/analytics" element={<Analytics />} />
+        <Route path="/timer" element={<FocusTimer />} />
+        <Route path="/ai" element={<AIInsights />} />
+        <Route path="/messages" element={<MessagesPage />} />
+        <Route path="/friends" element={<FriendsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </DashboardLayout>
+  );
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <Router>
+        <AppContent />
         <Toaster
           position="top-right"
           toastOptions={{
-            duration: 3000,
-            style: {
-              background: '#fff',
-              color: '#111827',
-              border: '1px solid #e5e7eb',
-              borderRadius: '12px',
-              boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
-              fontSize: '0.875rem',
-              fontFamily: "'SF Pro Display', 'SF Pro Icons', 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif",
-            },
+            style: { background: '#1f2937', color: '#f9fafb', borderRadius: '12px', fontSize: '14px' },
+            success: { iconTheme: { primary: '#10b981', secondary: '#f9fafb' } },
+            error: { iconTheme: { primary: '#ef4444', secondary: '#f9fafb' } },
           }}
         />
-      </>
-    );
-  }
-
-  return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <DashboardLayout>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/tasks" element={<TaskList />} />
-            <Route path="/timer" element={<FocusTimer />} />
-            <Route path="/analytics" element={<Analytics />} />
-            <Route path="/ai" element={<AIInsights />} />
-            <Route path="/calendar" element={<CalendarView />} />
-            <Route path="/messages" element={<MessagesPage />} />
-            <Route path="/friends" element={<FriendsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </DashboardLayout>
-      </BrowserRouter>
-
-      <Toaster
-        position="top-right"
-        toastOptions={{
-          duration: 3000,
-          style: {
-            background: '#fff',
-            color: '#1d1d1f',
-            border: '1px solid rgba(0,0,0,0.06)',
-            borderRadius: '14px',
-            boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
-            fontSize: '0.9375rem',
-            fontFamily: "'SF Pro Display', 'SF Pro Icons', 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif",
-          },
-          success: {
-            iconTheme: {
-              primary: '#10b981',
-              secondary: '#fff',
-            },
-          },
-          error: {
-            iconTheme: {
-              primary: '#ef4444',
-              secondary: '#fff',
-            },
-          },
-        }}
-      />
+      </Router>
     </QueryClientProvider>
   );
 }

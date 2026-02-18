@@ -1,159 +1,107 @@
-﻿import { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { AuthService } from '../../services/authService';
-import { useAppStore } from '../../store/appStore';
+import { NavLink } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import {
-  LayoutDashboard, CheckSquare, Clock, BarChart3, Brain,
-  Calendar, MessageSquare, Settings, LogOut, ChevronLeft,
-  ChevronRight, Zap,
+  LayoutDashboard,
+  ListTodo,
+  BarChart3,
+  Timer,
+  Settings,
+  Sparkles,
+  Calendar,
+  MessageSquare,
+  HelpCircle,
+  UserPlus,
 } from 'lucide-react';
 
 const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/tasks', icon: CheckSquare, label: 'Tasks' },
-  { to: '/calendar', icon: Calendar, label: 'Calendar' },
-  { to: '/timer', icon: Clock, label: 'Focus Timer' },
-  { to: '/analytics', icon: BarChart3, label: 'Analytics' },
-  { to: '/ai', icon: Brain, label: 'AI Insights' },
-  { to: '/messages', icon: MessageSquare, label: 'Messages' },
+  { icon: LayoutDashboard, label: 'Dashboard', path: '/' },
+  { icon: ListTodo, label: 'Tasks', path: '/tasks' },
+  { icon: Calendar, label: 'Calendar', path: '/calendar' },
+  { icon: Timer, label: 'Timer', path: '/timer' },
+  { icon: BarChart3, label: 'Analytics', path: '/analytics' },
+  { icon: Sparkles, label: 'AI Insights', path: '/ai' },
+  { icon: MessageSquare, label: 'Messages', path: '/messages' },
+  { icon: UserPlus, label: 'Friends', path: '/friends' },
+];
+
+const bottomItems = [
+  { icon: HelpCircle, label: 'Help', path: '/help' },
+  { icon: Settings, label: 'Settings', path: '/settings' },
 ];
 
 export const Sidebar = () => {
-  const [collapsed, setCollapsed] = useState(false);
-  const user = useAppStore((state) => state.user);
-  const navigate = useNavigate();
-
-  const handleSignOut = async () => {
-    await AuthService.signOut();
-    navigate('/');
-  };
-
-  const userName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'User';
-  const userInitial = userName.charAt(0).toUpperCase();
-
   return (
-    <motion.aside
-      animate={{ width: collapsed ? 72 : 260 }}
-      transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-      className="h-screen sticky top-0 flex flex-col bg-white/80 backdrop-blur-xl border-r border-black/[0.06] z-30 overflow-hidden"
+    <motion.div
+      initial={{ x: -100 }}
+      animate={{ x: 0 }}
+      className="w-22 h-screen bg-white border-r border-gray-200 flex flex-col items-center py-5"
     >
       {/* Logo */}
-      <div className="p-4 flex items-center gap-3">
-        <motion.div
-          whileHover={{ scale: 1.05, rotate: 5 }}
-          className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-emerald-500/20"
-        >
-          <Zap className="w-5 h-5 text-white" />
-        </motion.div>
-        <AnimatePresence>
-          {!collapsed && (
-            <motion.div
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -10 }}
-              transition={{ duration: 0.2 }}
-            >
-              <h1 className="text-base font-bold text-[#1d1d1f] tracking-tight">WorkTracker</h1>
-              <p className="text-[10px] text-[#86868b] font-medium uppercase tracking-wider">Pro</p>
-            </motion.div>
-          )}
-        </AnimatePresence>
+      <div className="mb-8">
+        <div className="w-10 h-10 rounded-xl bg-linear-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-200/50">
+          <span className="text-white text-lg font-bold">W</span>
+        </div>
+        <p className="text-[9px] text-gray-400 text-center mt-1 font-medium">WorkTracker</p>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
-        {navItems.map((item) => (
+      {/* Main Navigation */}
+      <nav className="flex-1 flex flex-col items-center gap-1 w-full px-2">
+        {navItems.map((item, index) => (
+          <motion.div
+            key={item.path}
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: index * 0.04 }}
+            className="w-full"
+          >
+            <NavLink
+              to={item.path}
+              className={({ isActive }) =>
+                `flex flex-col items-center gap-1 py-2.5 px-1 rounded-xl transition-all duration-200 group ${
+                  isActive
+                    ? 'bg-emerald-50 text-emerald-600'
+                    : 'text-gray-400 hover:bg-gray-50 hover:text-gray-600'
+                }`
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <item.icon className={`w-5 h-5 ${isActive ? 'text-emerald-600' : 'text-gray-400 group-hover:text-gray-600'}`} />
+                  <span className={`text-[10px] font-medium ${isActive ? 'text-emerald-600' : 'text-gray-400 group-hover:text-gray-600'}`}>
+                    {item.label}
+                  </span>
+                </>
+              )}
+            </NavLink>
+          </motion.div>
+        ))}
+      </nav>
+
+      {/* Bottom Navigation */}
+      <div className="flex flex-col items-center gap-1 w-full px-2 mb-3">
+        {bottomItems.map((item) => (
           <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === '/'}
+            key={item.path}
+            to={item.path}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group relative ${isActive
-                ? 'bg-emerald-50 text-emerald-700'
-                : 'text-[#6e6e73] hover:bg-black/[0.03] hover:text-[#1d1d1f]'
+              `flex flex-col items-center gap-1 py-2.5 px-1 rounded-xl transition-all duration-200 w-full group ${
+                isActive
+                  ? 'bg-emerald-50 text-emerald-600'
+                  : 'text-gray-400 hover:bg-gray-50 hover:text-gray-600'
               }`
             }
           >
             {({ isActive }) => (
               <>
-                {isActive && (
-                  <motion.div
-                    layoutId="activeNav"
-                    className="absolute inset-0 bg-emerald-50 rounded-xl"
-                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                  />
-                )}
-                <div className="relative z-10 flex items-center gap-3">
-                  <item.icon className={`w-[18px] h-[18px] flex-shrink-0 ${isActive ? 'text-emerald-600' : ''}`} />
-                  <AnimatePresence>
-                    {!collapsed && (
-                      <motion.span
-                        initial={{ opacity: 0, x: -8 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -8 }}
-                        className={`text-[0.8125rem] font-medium whitespace-nowrap ${isActive ? 'text-emerald-700' : ''}`}
-                      >
-                        {item.label}
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
-                </div>
+                <item.icon className={`w-5 h-5 ${isActive ? 'text-emerald-600' : 'text-gray-400 group-hover:text-gray-600'}`} />
+                <span className={`text-[10px] font-medium ${isActive ? 'text-emerald-600' : 'text-gray-400 group-hover:text-gray-600'}`}>
+                  {item.label}
+                </span>
               </>
             )}
           </NavLink>
         ))}
-      </nav>
-
-      {/* User + Collapse */}
-      <div className="p-3 space-y-2 border-t border-black/[0.04]">
-        {/* User Profile */}
-        <div className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-black/[0.03] transition-colors cursor-pointer">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-400 to-violet-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-            {userInitial}
-          </div>
-          <AnimatePresence>
-            {!collapsed && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 min-w-0">
-                <p className="text-xs font-semibold text-[#1d1d1f] truncate">{userName}</p>
-                <p className="text-[10px] text-[#86868b] truncate">{user?.email}</p>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Settings + Sign Out */}
-        <NavLink
-          to="/settings"
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-3 py-2 rounded-xl transition-colors ${isActive ? 'bg-gray-100 text-[#1d1d1f]' : 'text-[#86868b] hover:bg-black/[0.03] hover:text-[#1d1d1f]'
-            }`
-          }
-        >
-          <Settings className="w-[18px] h-[18px] flex-shrink-0" />
-          <AnimatePresence>
-            {!collapsed && <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-[0.8125rem] font-medium">Settings</motion.span>}
-          </AnimatePresence>
-        </NavLink>
-
-        <button
-          onClick={handleSignOut}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[#86868b] hover:bg-red-50 hover:text-red-500 transition-colors"
-        >
-          <LogOut className="w-[18px] h-[18px] flex-shrink-0" />
-          <AnimatePresence>
-            {!collapsed && <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-[0.8125rem] font-medium">Sign Out</motion.span>}
-          </AnimatePresence>
-        </button>
-
-        {/* Collapse toggle */}
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="w-full flex items-center justify-center p-2 rounded-xl hover:bg-black/[0.03] text-[#86868b] transition-colors"
-        >
-          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </button>
       </div>
-    </motion.aside>
+    </motion.div>
   );
 };

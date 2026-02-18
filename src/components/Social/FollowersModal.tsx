@@ -166,9 +166,13 @@ function FollowListItem({
   isOwnProfile: boolean;
   onMessage?: (userId: string) => void;
 }) {
-  const name = profile.full_name || profile.username || profile.email.split('@')[0];
+  const name = profile.full_name || profile.username || profile.email?.split('@')[0] || 'Unknown User';
   const initial = name[0]?.toUpperCase() || '?';
-  const displayUsername = profile.username ? `@${profile.username}` : profile.email;
+  const displayUsername = profile.username
+    ? `@${profile.username}`
+    : profile.email
+      ? profile.email
+      : `ID: ${profile.id.slice(0, 8)}...`;
   const { relationship } = useFollow(isOwnProfile ? null : profile.id);
   const canMessage = !isOwnProfile && onMessage && (relationship === 'following' || relationship === 'mutual');
 

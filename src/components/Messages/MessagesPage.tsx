@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search,
   Send,
-  Users,
   MessageSquare,
   X,
   Smile,
@@ -19,10 +18,12 @@ import {
   CheckCheck,
   ChevronDown,
   Loader2,
+  Trash2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAppStore } from '../../store/appStore';
 import { useConversations, useMessages } from '../../hooks/useMessaging';
+import { MessageService } from '../../services/messageService';
 import { useFollowersList, useFollowSearch } from '../../hooks/useFollow';
 import { FriendService } from '../../services/friendService';
 import type { Conversation, Message, UserProfile } from '../../types/database.types';
@@ -36,8 +37,19 @@ export const MessagesPage = () => {
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [showMobileChat, setShowMobileChat] = useState(false);
   const [showNewMessage, setShowNewMessage] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const user = useAppStore((s) => s.user);
   const { conversations, loading: convsLoading, startDirectChat, refresh: refreshConversations } = useConversations();
+
+  // Keep selectedConversation in sync with the enriched conversations list
+  useEffect(() => {
+    if (selectedConversation && conversations.length > 0) {
+      const enriched = conversations.find(c => c.id === selectedConversation.id);
+      if (enriched) {
+        setSelectedConversation(enriched);
+      }
+    }
+  }, [conversations]);
 
   useEffect(() => {
     FriendService.ensureProfile();
@@ -88,8 +100,15 @@ export const MessagesPage = () => {
             <input
               type="text"
               placeholder="Search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2 text-sm bg-[#363636] text-white border-0 rounded-lg focus:ring-1 focus:ring-[#555] focus:outline-none placeholder:text-[#a8a8a8] transition-colors"
             />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#a8a8a8] hover:text-white">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -111,6 +130,7 @@ export const MessagesPage = () => {
           loading={convsLoading}
           onSelect={handleSelectConversation}
           selectedId={selectedConversation?.id || null}
+          searchQuery={searchQuery}
         />
       </div>
 
@@ -181,8 +201,8 @@ function NotesRow() {
         </button>
 
         {/* Following users */}
-        {followingList.slice(0, 12).map((f) => {
-          const profile = (f as Record<string, unknown>).following as UserProfile | undefined;
+        {followingList.slice(0, 12).map((f: typeof followingList[number]) => {
+          const profile = (f as unknown as Record<string, unknown>).following as UserProfile | undefined;
           if (!profile) return null;
           const name = profile.full_name || profile.username || profile.email?.split('@')[0] || '?';
           const initial = name[0]?.toUpperCase() || '?';
@@ -218,12 +238,14 @@ function ConversationList({
   loading,
   onSelect,
   selectedId,
+  searchQuery,
 }: {
   userId: string;
   conversations: Conversation[];
   loading: boolean;
   onSelect: (conv: Conversation) => void;
   selectedId: string | null;
+  searchQuery: string;
 }) {
 
   const formatTime = (dateStr: string) => {
@@ -234,22 +256,34 @@ function ConversationList({
     return dist;
   };
 
+  // Filter conversations by search query
+  const filtered = searchQuery.trim()
+    ? conversations.filter((conv) => {
+        const other = conv.participants?.find((p) => p.user_id !== userId);
+        const otherUser = other?.user;
+        const displayName = conv.name || otherUser?.full_name || otherUser?.username || otherUser?.email?.split('@')[0] || '';
+        const lastContent = conv.last_message?.content || '';
+        const q = searchQuery.toLowerCase();
+        return displayName.toLowerCase().includes(q) || lastContent.toLowerCase().includes(q);
+      })
+    : conversations;
+
   return (
     <div className="flex-1 overflow-y-auto">
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-5 h-5 animate-spin text-[#0095F6]" />
         </div>
-      ) : conversations.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="text-center py-16 px-6">
           <MessageSquare className="w-12 h-12 text-[#363636] mx-auto mb-4" />
-          <p className="text-sm font-medium text-[#a8a8a8]">No messages yet</p>
+          <p className="text-sm font-medium text-[#a8a8a8]">{searchQuery ? 'No results found' : 'No messages yet'}</p>
           <p className="text-xs text-[#555] mt-1">
-            Tap the compose button to start chatting
+            {searchQuery ? 'Try a different search term' : 'Tap the compose button to start chatting'}
           </p>
         </div>
       ) : (
-        conversations.map((conv) => {
+        filtered.map((conv) => {
           const other = conv.participants?.find((p) => p.user_id !== userId);
           const otherUser = other?.user;
           const displayName = conv.name || otherUser?.full_name || otherUser?.username || otherUser?.email?.split('@')[0] || 'Unknown';
@@ -515,6 +549,20 @@ function ChatPanel({
                             <button className="p-1 rounded-full hover:bg-white/10 text-[#a8a8a8]" title="Reply">
                               <CornerUpLeft className="w-4 h-4" />
                             </button>
+                            {isOwn && (
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await MessageService.deleteMessage(conversation.id, msg.id);
+                                    toast.success('Message deleted');
+                                  } catch { toast.error('Failed to delete'); }
+                                }}
+                                className="p-1 rounded-full hover:bg-red-500/20 text-[#a8a8a8] hover:text-red-400"
+                                title="Delete"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
 
                           {/* Timestamp */}
@@ -653,14 +701,17 @@ function NewMessageModal({
   const handleStartChat = async (userId: string) => {
     setStarting(true);
     try {
+      console.log('[NewMessageModal] Starting chat with user:', userId);
       const conv = await startDirectChat(userId);
       if (conv) {
+        console.log('[NewMessageModal] Conversation created:', conv.id);
         onStartChat(conv);
       } else {
+        console.error('[NewMessageModal] startDirectChat returned null');
         toast.error('Could not start conversation. Please try again.');
       }
     } catch (err) {
-      console.error('Start chat error:', err);
+      console.error('[NewMessageModal] Start chat error:', err);
       toast.error('Something went wrong. Please try again.');
     } finally {
       setStarting(false);
@@ -722,12 +773,14 @@ function NewMessageModal({
               ) : searchResults.length === 0 ? (
                 <div className="text-center py-10 px-5">
                   <p className="text-sm text-[#a8a8a8]">No account found.</p>
+                  <p className="text-xs text-[#555] mt-1">Try searching by username, name, or email</p>
                 </div>
               ) : (
                 searchResults.map((u) => {
-                  const name = u.full_name || u.email.split('@')[0];
+                  if (!u || !u.id) return null;
+                  const name = u.full_name || u.username || u.email?.split('@')[0] || 'Unknown';
                   const initial = name[0]?.toUpperCase() || '?';
-                  const uname = u.username ? `@${u.username}` : u.email;
+                  const uname = u.username ? `@${u.username}` : (u.email || 'No email');
                   const isSelected = selectedUserId === u.id;
                   return (
                     <button
@@ -768,11 +821,11 @@ function NewMessageModal({
                 </div>
               ) : (
                 followingList.map((f) => {
-                  const profile = (f as Record<string, unknown>).following as UserProfile | undefined;
-                  if (!profile) return null;
-                  const name = profile.full_name || profile.username || profile.email?.split('@')[0] || '?';
+                  const profile = (f as unknown as Record<string, unknown>).following as UserProfile | undefined;
+                  if (!profile || !profile.id) return null;
+                  const name = profile.full_name || profile.username || profile.email?.split('@')[0] || 'Unknown';
                   const initial = name[0]?.toUpperCase() || '?';
-                  const uname = profile.username ? `@${profile.username}` : profile.email || '';
+                  const uname = profile.username ? `@${profile.username}` : (profile.email || 'No email');
                   const isSelected = selectedUserId === profile.id;
                   return (
                     <button

@@ -1,679 +1,346 @@
-import { supabase } from '../lib/supabase';
-import type { Follow, UserProfile, FollowCounts, FollowRelationship, UserBlock } from '../types/database.types';
+import { db } from '../lib/firebase';
+import { auth } from '../lib/firebase';
+import {
+  collection, doc, addDoc, getDoc, getDocs, updateDoc, deleteDoc, query, where, writeBatch,
+} from 'firebase/firestore';
+import type {
+  Follow, FollowHistory, UserBlock, FollowCounts,
+  FollowRelationship, UserProfileWithFollowState,
+} from '../types/database.types';
+import { FriendService } from './friendService';
 
-// ═══════════════════════════════════════════
-// Follow Service
-// Instagram-style follow/unfollow/block system
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// Follow Service – Firestore only
+// Collections: follows/{id}, follow_history/{id},
+//              user_blocks/{id},
+//              users/{uid}/notifications/{id}
+// ═══════════════════════════════════════════════════════
 
-async function getAuthUserId(): Promise<string | null> {
-  const { data: { user } } = await supabase.auth.getUser();
-  return user?.id || null;
+function uid() {
+  const u = auth.currentUser?.uid;
+  if (!u) throw new Error('Not authenticated');
+  return u;
 }
 
-// ─── Local change notification (cross-hook sync) ───
+// ─── Cross-hook event system ───
 
-const changeCallbacks = new Set<() => void>();
+type ChangeCallback = () => void;
+const changeListeners = new Set<ChangeCallback>();
 
-export function subscribeToChanges(cb: () => void): () => void {
-  changeCallbacks.add(cb);
-  return () => { changeCallbacks.delete(cb); };
+export function subscribeToChanges(cb: ChangeCallback) {
+  changeListeners.add(cb);
+  return () => { changeListeners.delete(cb); };
 }
 
 function emitChange() {
-  setTimeout(() => {
-    changeCallbacks.forEach(cb => { try { cb(); } catch { /* ignore */ } });
-  }, 100);
+  changeListeners.forEach((cb) => { try { cb(); } catch { /* */ } });
 }
 
-// ─── Follow / Request ───
+// ─── Follow History ───
 
-/**
- * Follow a user. If the target is private, creates a 'requested' follow.
- * If public, auto-accepts. Prevents self-follow, duplicate requests, and blocked users.
- */
-export async function followUser(targetUserId: string): Promise<Follow | null> {
-  const userId = await getAuthUserId();
-  if (!userId) throw new Error('You must be logged in to follow users');
-  if (userId === targetUserId) throw new Error('You cannot follow yourself');
+async function logHistory(followerId: string, followingId: string, action: FollowHistory['action'], metadata?: Record<string, unknown>) {
+  await addDoc(collection(db, 'follow_history'), {
+    follower_id: followerId,
+    following_id: followingId,
+    action,
+    metadata: metadata || null,
+    created_at: new Date().toISOString(),
+  });
+}
 
-  // Check if blocked
-  const blocked = await isBlocked(userId, targetUserId);
-  if (blocked) throw new Error('Unable to follow this user');
+// ─── Block helpers ───
 
-  // Check for existing follow
-  const { data: existing } = await supabase
-    .from('follows')
-    .select('*')
-    .eq('follower_id', userId)
-    .eq('following_id', targetUserId)
-    .maybeSingle();
+async function isBlocked(userId1: string, userId2: string): Promise<boolean> {
+  const q1 = query(collection(db, 'user_blocks'), where('blocker_id', '==', userId1), where('blocked_id', '==', userId2));
+  const q2 = query(collection(db, 'user_blocks'), where('blocker_id', '==', userId2), where('blocked_id', '==', userId1));
+  const [s1, s2] = await Promise.all([getDocs(q1), getDocs(q2)]);
+  return !s1.empty || !s2.empty;
+}
 
-  // If already following or requested, return existing
-  if (existing && (existing.status === 'accepted' || existing.status === 'requested')) {
-    return existing as Follow;
-  }
+// ─── Follow CRUD ───
 
-  // If previously rejected, delete old row to allow re-follow
-  if (existing && existing.status === 'rejected') {
-    await supabase.from('follows').delete().eq('id', existing.id);
-  }
+export async function followUser(targetId: string): Promise<Follow> {
+  const id = uid();
+  if (id === targetId) throw new Error('Cannot follow yourself');
+  if (await isBlocked(id, targetId)) throw new Error('Cannot follow this user');
 
-  // Check if target is private (use select('*') to avoid error when is_private column missing)
-  const { data: targetProfile, error: profileError } = await supabase
-    .from('user_profiles')
-    .select('*')
-    .eq('id', targetUserId)
-    .single();
+  // Already following?
+  const existingQ = query(collection(db, 'follows'), where('follower_id', '==', id), where('following_id', '==', targetId));
+  const existingSnap = await getDocs(existingQ);
+  if (!existingSnap.empty) throw new Error('Already following or requested');
 
-  if (profileError || !targetProfile) {
-    throw new Error('Could not find the target user profile.');
-  }
+  // Check if target is private
+  const targetProfile = await FriendService.getProfile(targetId);
+  const initialStatus: Follow['status'] = targetProfile?.is_private ? 'requested' : 'accepted';
 
-  const isPrivate = (targetProfile as Record<string, unknown>).is_private === true;
-  const status = isPrivate ? 'requested' : 'accepted';
+  // Check re-follow
+  const reverseQ = query(collection(db, 'follows'), where('follower_id', '==', targetId), where('following_id', '==', id), where('status', '==', 'accepted'));
+  const reverseSnap = await getDocs(reverseQ);
+  const isRefollow = !reverseSnap.empty;
 
-  const { data, error } = await supabase
-    .from('follows')
-    .insert({ follower_id: userId, following_id: targetUserId, status })
-    .select()
-    .single();
+  const data = {
+    follower_id: id,
+    following_id: targetId,
+    status: initialStatus,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  const ref = await addDoc(collection(db, 'follows'), data);
 
-  if (error) {
-    throw new Error(
-      error.message.includes('does not exist')
-        ? 'Follow system tables not found. Please run migration 006_follow_system.sql in your Supabase SQL editor.'
-        : `Follow failed: ${error.message}`
-    );
-  }
+  await logHistory(id, targetId, 'follow', { status: initialStatus, is_refollow: isRefollow });
 
-  // Log history
-  await supabase.from('follow_history').insert({
-    follower_id: userId,
-    following_id: targetUserId,
-    action: 'follow',
-    metadata: { status },
+  // Notification
+  const myProfile = await FriendService.getProfile(id);
+  const notifType = initialStatus === 'requested' ? 'follow_request' : (isRefollow ? 'refollow' : 'new_follower');
+  const notifTitle = initialStatus === 'requested' ? 'New Follow Request' : (isRefollow ? 'Followed You Back!' : 'New Follower');
+  const notifBody = initialStatus === 'requested'
+    ? `${myProfile?.full_name || 'Someone'} wants to follow you`
+    : (isRefollow ? `${myProfile?.full_name || 'Someone'} followed you back!` : `${myProfile?.full_name || 'Someone'} started following you`);
+
+  await addDoc(collection(db, 'users', targetId, 'notifications'), {
+    user_id: targetId, type: notifType, title: notifTitle, body: notifBody,
+    data: { follow_id: ref.id, follower_id: id },
+    read: false, created_at: new Date().toISOString(),
   });
 
-  // Get current user profile for notification
-  const { data: myProfile } = await supabase
-    .from('user_profiles')
-    .select('*')
-    .eq('id', userId)
-    .single();
-
-  const myName = myProfile?.full_name || myProfile?.username || 'Someone';
-
-  if (isPrivate) {
-    // Send follow request notification
-    await supabase.from('realtime_notifications').insert({
-      user_id: targetUserId,
-      type: 'follow_request',
-      title: 'New follow request',
-      body: `${myName} wants to follow you`,
-      data: { follow_id: data.id, from_user_id: userId },
-    }).then(({ error: notifErr }) => {
-      if (notifErr) console.warn('Notification insert failed:', notifErr.message);
-    });
-  } else {
-    // Auto-accepted: notify as new follower
-    await supabase.from('realtime_notifications').insert({
-      user_id: targetUserId,
-      type: 'new_follower',
-      title: 'New follower',
-      body: `${myName} started following you`,
-      data: { follow_id: data.id, from_user_id: userId },
-    }).then(({ error: notifErr }) => {
-      if (notifErr) console.warn('Notification insert failed:', notifErr.message);
-    });
-  }
-
   emitChange();
-  return data as Follow;
+  return { id: ref.id, ...data } as Follow;
 }
 
-// ─── Accept Follow Request ───
+export async function unfollowUser(targetId: string): Promise<void> {
+  const id = uid();
+  const q = query(collection(db, 'follows'), where('follower_id', '==', id), where('following_id', '==', targetId));
+  const snap = await getDocs(q);
+  const batch = writeBatch(db);
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+  await logHistory(id, targetId, 'unfollow');
+  emitChange();
+}
 
 export async function acceptFollowRequest(followId: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
+  const fSnap = await getDoc(doc(db, 'follows', followId));
+  if (!fSnap.exists()) throw new Error('Follow not found');
+  await updateDoc(doc(db, 'follows', followId), { status: 'accepted', updated_at: new Date().toISOString() });
+  const f = fSnap.data();
+  await logHistory(f.follower_id, f.following_id, 'accept');
 
-  const { data, error } = await supabase
-    .from('follows')
-    .update({ status: 'accepted', updated_at: new Date().toISOString() })
-    .eq('id', followId)
-    .eq('following_id', userId) // Only the target can accept
-    .eq('status', 'requested')
-    .select()
-    .single();
-
-  if (error || !data) {
-    throw new Error(error?.message || 'Could not accept follow request');
-  }
-
+  const myProfile = await FriendService.getProfile(uid());
+  await addDoc(collection(db, 'users', f.follower_id, 'notifications'), {
+    user_id: f.follower_id, type: 'follow_accepted', title: 'Follow Request Accepted',
+    body: `${myProfile?.full_name || 'Someone'} accepted your follow request`,
+    data: { follow_id: followId }, read: false, created_at: new Date().toISOString(),
+  });
   emitChange();
-
-  // Log history
-  await supabase.from('follow_history').insert({
-    follower_id: data.follower_id,
-    following_id: userId,
-    action: 'accept',
-  });
-
-  // Get current user profile for notification
-  const { data: myProfile } = await supabase
-    .from('user_profiles')
-    .select('full_name, username')
-    .eq('id', userId)
-    .single();
-
-  const myName = myProfile?.full_name || myProfile?.username || 'Someone';
-
-  // Notify the follower that their request was accepted
-  await supabase.from('realtime_notifications').insert({
-    user_id: data.follower_id,
-    type: 'follow_accepted',
-    title: 'Follow request accepted',
-    body: `${myName} accepted your follow request`,
-    data: { follow_id: data.id, by_user_id: userId },
-  });
 }
-
-// ─── Reject Follow Request ───
 
 export async function rejectFollowRequest(followId: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
-
-  const { data } = await supabase
-    .from('follows')
-    .update({ status: 'rejected', updated_at: new Date().toISOString() })
-    .eq('id', followId)
-    .eq('following_id', userId)
-    .eq('status', 'requested')
-    .select()
-    .single();
-
-  if (data) {
-    emitChange();
-    await supabase.from('follow_history').insert({
-      follower_id: data.follower_id,
-      following_id: userId,
-      action: 'reject',
-    });
-  }
-}
-
-// ─── Cancel Sent Follow Request ───
-
-export async function cancelFollowRequest(followId: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
-
-  const { data } = await supabase
-    .from('follows')
-    .select('*')
-    .eq('id', followId)
-    .eq('follower_id', userId)
-    .eq('status', 'requested')
-    .single();
-
-  if (data) {
-    await supabase.from('follows').delete().eq('id', followId);
-    emitChange();
-    await supabase.from('follow_history').insert({
-      follower_id: userId,
-      following_id: data.following_id,
-      action: 'cancel',
-    });
-  }
-}
-
-// ─── Unfollow ───
-
-export async function unfollowUser(targetUserId: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
-
-  await supabase
-    .from('follows')
-    .delete()
-    .eq('follower_id', userId)
-    .eq('following_id', targetUserId);
-
+  const fSnap = await getDoc(doc(db, 'follows', followId));
+  if (!fSnap.exists()) throw new Error('Follow not found');
+  const f = fSnap.data();
+  await deleteDoc(doc(db, 'follows', followId));
+  await logHistory(f.follower_id, f.following_id, 'reject');
   emitChange();
-
-  await supabase.from('follow_history').insert({
-    follower_id: userId,
-    following_id: targetUserId,
-    action: 'unfollow',
-  });
 }
 
-// ─── Remove Follower ───
-
-export async function removeFollower(followerUserId: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
-
-  await supabase
-    .from('follows')
-    .delete()
-    .eq('follower_id', followerUserId)
-    .eq('following_id', userId);
-
+export async function cancelFollowRequest(targetId: string): Promise<void> {
+  const id = uid();
+  const q = query(collection(db, 'follows'), where('follower_id', '==', id), where('following_id', '==', targetId), where('status', '==', 'requested'));
+  const snap = await getDocs(q);
+  const batch = writeBatch(db);
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+  await logHistory(id, targetId, 'cancel');
   emitChange();
-
-  await supabase.from('follow_history').insert({
-    follower_id: followerUserId,
-    following_id: userId,
-    action: 'remove_follower',
-  });
 }
 
-// ─── Block User ───
-
-export async function blockUser(targetUserId: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId || userId === targetUserId) return;
-
-  // Remove any existing follow relationships in both directions
-  await supabase.from('follows').delete()
-    .or(`and(follower_id.eq.${userId},following_id.eq.${targetUserId}),and(follower_id.eq.${targetUserId},following_id.eq.${userId})`);
-
-  // Insert block
-  const { error } = await supabase.from('user_blocks').insert({
-    blocker_id: userId,
-    blocked_id: targetUserId,
-  });
-
-  if (!error) {
-    emitChange();
-    await supabase.from('follow_history').insert({
-      follower_id: userId,
-      following_id: targetUserId,
-      action: 'block',
-    });
-  }
-}
-
-// ─── Unblock User ───
-
-export async function unblockUser(targetUserId: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
-
-  await supabase.from('user_blocks').delete()
-    .eq('blocker_id', userId)
-    .eq('blocked_id', targetUserId);
-
+export async function removeFollower(followerId: string): Promise<void> {
+  const id = uid();
+  const q = query(collection(db, 'follows'), where('follower_id', '==', followerId), where('following_id', '==', id));
+  const snap = await getDocs(q);
+  const batch = writeBatch(db);
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+  await logHistory(followerId, id, 'remove_follower');
   emitChange();
+}
 
-  await supabase.from('follow_history').insert({
-    follower_id: userId,
-    following_id: targetUserId,
-    action: 'unblock',
+export async function blockUser(targetId: string): Promise<void> {
+  const id = uid();
+  // Remove all follows between users
+  const q1 = query(collection(db, 'follows'), where('follower_id', '==', id), where('following_id', '==', targetId));
+  const q2 = query(collection(db, 'follows'), where('follower_id', '==', targetId), where('following_id', '==', id));
+  const [s1, s2] = await Promise.all([getDocs(q1), getDocs(q2)]);
+  const batch = writeBatch(db);
+  [...s1.docs, ...s2.docs].forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+
+  await addDoc(collection(db, 'user_blocks'), { blocker_id: id, blocked_id: targetId, created_at: new Date().toISOString() });
+  await logHistory(id, targetId, 'block');
+  emitChange();
+}
+
+export async function unblockUser(targetId: string): Promise<void> {
+  const id = uid();
+  const q = query(collection(db, 'user_blocks'), where('blocker_id', '==', id), where('blocked_id', '==', targetId));
+  const snap = await getDocs(q);
+  const batch = writeBatch(db);
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+  await logHistory(id, targetId, 'unblock');
+  emitChange();
+}
+
+// ─── Queries ───
+
+export async function getFollowers(): Promise<Follow[]> {
+  const id = uid();
+  const q = query(collection(db, 'follows'), where('following_id', '==', id), where('status', '==', 'accepted'));
+  const snap = await getDocs(q);
+  const follows = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Follow, 'id'>) })) as Follow[];
+  const profileIds = follows.map((f) => f.follower_id);
+  const profiles = await FriendService.getProfiles(profileIds);
+  const map = new Map(profiles.map((p) => [p.id, p]));
+  follows.forEach((f) => { 
+    const profile = map.get(f.follower_id);
+    if (profile) {
+      if (!profile.id) profile.id = f.follower_id;
+      f.follower = profile;
+    }
   });
+  return follows;
 }
 
-// ─── Check Block Status ───
-
-export async function isBlocked(userId: string, targetUserId: string): Promise<boolean> {
-  const { data } = await supabase
-    .from('user_blocks')
-    .select('id')
-    .or(`and(blocker_id.eq.${userId},blocked_id.eq.${targetUserId}),and(blocker_id.eq.${targetUserId},blocked_id.eq.${userId})`)
-    .maybeSingle();
-
-  return !!data;
+export async function getFollowing(): Promise<Follow[]> {
+  const id = uid();
+  const q = query(collection(db, 'follows'), where('follower_id', '==', id), where('status', '==', 'accepted'));
+  const snap = await getDocs(q);
+  const follows = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Follow, 'id'>) })) as Follow[];
+  const profileIds = follows.map((f) => f.following_id);
+  const profiles = await FriendService.getProfiles(profileIds);
+  const map = new Map(profiles.map((p) => [p.id, p]));
+  follows.forEach((f) => { 
+    const profile = map.get(f.following_id);
+    if (profile) {
+      if (!profile.id) profile.id = f.following_id;
+      f.following = profile;
+    }
+  });
+  return follows;
 }
 
-// ─── Get Follow Relationship ───
-
-export async function getFollowRelationship(targetUserId: string): Promise<{
-  relationship: FollowRelationship;
-  outgoingFollow: Follow | null;
-  incomingFollow: Follow | null;
-}> {
-  const userId = await getAuthUserId();
-  if (!userId || userId === targetUserId) {
-    return { relationship: 'none', outgoingFollow: null, incomingFollow: null };
-  }
-
-  // Check blocked
-  const blocked = await isBlocked(userId, targetUserId);
-  if (blocked) {
-    return { relationship: 'blocked', outgoingFollow: null, incomingFollow: null };
-  }
-
-  // Get both direction follows
-  const { data: follows } = await supabase
-    .from('follows')
-    .select('*')
-    .or(`and(follower_id.eq.${userId},following_id.eq.${targetUserId}),and(follower_id.eq.${targetUserId},following_id.eq.${userId})`)
-    .in('status', ['requested', 'accepted']);
-
-  const outgoing = follows?.find(
-    (f) => f.follower_id === userId && f.following_id === targetUserId
-  ) as Follow | undefined;
-  const incoming = follows?.find(
-    (f) => f.follower_id === targetUserId && f.following_id === userId
-  ) as Follow | undefined;
-
-  let relationship: FollowRelationship = 'none';
-
-  if (outgoing?.status === 'requested') {
-    relationship = 'requested';
-  } else if (outgoing?.status === 'accepted' && incoming?.status === 'accepted') {
-    relationship = 'mutual';
-  } else if (outgoing?.status === 'accepted') {
-    relationship = 'following';
-  } else if (incoming?.status === 'accepted') {
-    relationship = 'follower';
-  }
-
-  return {
-    relationship,
-    outgoingFollow: outgoing || null,
-    incomingFollow: incoming || null,
-  };
+export async function getFollowRequests(): Promise<Follow[]> {
+  const id = uid();
+  const q = query(collection(db, 'follows'), where('following_id', '==', id), where('status', '==', 'requested'));
+  const snap = await getDocs(q);
+  const follows = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Follow, 'id'>) })) as Follow[];
+  const profileIds = follows.map((f) => f.follower_id);
+  const profiles = await FriendService.getProfiles(profileIds);
+  const map = new Map(profiles.map((p) => [p.id, p]));
+  follows.forEach((f) => { 
+    const profile = map.get(f.follower_id);
+    if (profile) {
+      if (!profile.id) profile.id = f.follower_id;
+      f.follower = profile;
+    }
+  });
+  return follows;
 }
-
-// ─── Get Followers List (paginated) ───
-
-export async function getFollowers(
-  userId: string,
-  page = 0,
-  pageSize = 50
-): Promise<{ data: Follow[]; count: number }> {
-  const from = page * pageSize;
-  const to = from + pageSize - 1;
-
-  const { data, error, count } = await supabase
-    .from('follows')
-    .select('*, follower:user_profiles!follows_follower_id_fkey(*)', { count: 'exact' })
-    .eq('following_id', userId)
-    .eq('status', 'accepted')
-    .order('created_at', { ascending: false })
-    .range(from, to);
-
-  if (error) {
-    console.warn('Get followers error:', error.message);
-    return { data: [], count: 0 };
-  }
-
-  return { data: (data || []) as Follow[], count: count || 0 };
-}
-
-// ─── Get Following List (paginated) ───
-
-export async function getFollowing(
-  userId: string,
-  page = 0,
-  pageSize = 50
-): Promise<{ data: Follow[]; count: number }> {
-  const from = page * pageSize;
-  const to = from + pageSize - 1;
-
-  const { data, error, count } = await supabase
-    .from('follows')
-    .select('*, following:user_profiles!follows_following_id_fkey(*)', { count: 'exact' })
-    .eq('follower_id', userId)
-    .eq('status', 'accepted')
-    .order('created_at', { ascending: false })
-    .range(from, to);
-
-  if (error) {
-    console.warn('Get following error:', error.message);
-    return { data: [], count: 0 };
-  }
-
-  return { data: (data || []) as Follow[], count: count || 0 };
-}
-
-// ─── Get Pending Follow Requests (received) ───
-
-export async function getPendingFollowRequests(): Promise<Follow[]> {
-  const userId = await getAuthUserId();
-  if (!userId) return [];
-
-  const { data, error } = await supabase
-    .from('follows')
-    .select('*, follower:user_profiles!follows_follower_id_fkey(*)')
-    .eq('following_id', userId)
-    .eq('status', 'requested')
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.warn('Get pending follow requests error:', error.message);
-    return [];
-  }
-
-  return (data || []) as Follow[];
-}
-
-// ─── Get Sent Follow Requests ───
 
 export async function getSentFollowRequests(): Promise<Follow[]> {
-  const userId = await getAuthUserId();
-  if (!userId) return [];
-
-  const { data, error } = await supabase
-    .from('follows')
-    .select('*, following:user_profiles!follows_following_id_fkey(*)')
-    .eq('follower_id', userId)
-    .eq('status', 'requested')
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.warn('Get sent follow requests error:', error.message);
-    return [];
-  }
-
-  return (data || []) as Follow[];
+  const id = uid();
+  const q = query(collection(db, 'follows'), where('follower_id', '==', id), where('status', '==', 'requested'));
+  const snap = await getDocs(q);
+  const follows = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Follow, 'id'>) })) as Follow[];
+  const profileIds = follows.map((f) => f.following_id);
+  const profiles = await FriendService.getProfiles(profileIds);
+  const map = new Map(profiles.map((p) => [p.id, p]));
+  follows.forEach((f) => { 
+    const profile = map.get(f.following_id);
+    if (profile) {
+      if (!profile.id) profile.id = f.following_id;
+      f.following = profile;
+    }
+  });
+  return follows;
 }
 
-// ─── Get Follow Counts ───
-
-export async function getFollowCounts(userId: string): Promise<FollowCounts> {
-  const [{ count: followers }, { count: following }] = await Promise.all([
-    supabase
-      .from('follows')
-      .select('id', { count: 'exact', head: true })
-      .eq('following_id', userId)
-      .eq('status', 'accepted'),
-    supabase
-      .from('follows')
-      .select('id', { count: 'exact', head: true })
-      .eq('follower_id', userId)
-      .eq('status', 'accepted'),
-  ]);
-
-  return {
-    followers: followers || 0,
-    following: following || 0,
-  };
+export async function getFollowCounts(userId?: string): Promise<FollowCounts> {
+  const id = userId || uid();
+  const fersQ = query(collection(db, 'follows'), where('following_id', '==', id), where('status', '==', 'accepted'));
+  const fingQ = query(collection(db, 'follows'), where('follower_id', '==', id), where('status', '==', 'accepted'));
+  const [fersSnap, fingSnap] = await Promise.all([getDocs(fersQ), getDocs(fingQ)]);
+  return { followers: fersSnap.size, following: fingSnap.size };
 }
 
-// ─── Get Blocked Users ───
+export async function getFollowRelationship(targetId: string): Promise<FollowRelationship> {
+  const id = uid();
+  if (id === targetId) return 'none';
+  if (await isBlocked(id, targetId)) return 'blocked';
+
+  const meToTarget = query(collection(db, 'follows'), where('follower_id', '==', id), where('following_id', '==', targetId));
+  const targetToMe = query(collection(db, 'follows'), where('follower_id', '==', targetId), where('following_id', '==', id));
+  const [s1, s2] = await Promise.all([getDocs(meToTarget), getDocs(targetToMe)]);
+
+  const iFollow = s1.docs.find((d) => d.data().status === 'accepted');
+  const theyFollow = s2.docs.find((d) => d.data().status === 'accepted');
+  const iRequested = s1.docs.find((d) => d.data().status === 'requested');
+
+  if (iFollow && theyFollow) return 'mutual';
+  if (iFollow) return 'following';
+  if (theyFollow) return 'follower';
+  if (iRequested) return 'requested';
+  return 'none';
+}
 
 export async function getBlockedUsers(): Promise<UserBlock[]> {
-  const userId = await getAuthUserId();
-  if (!userId) return [];
+  const id = uid();
+  const q = query(collection(db, 'user_blocks'), where('blocker_id', '==', id));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<UserBlock, 'id'>) })) as UserBlock[];
+}
 
-  const { data, error } = await supabase
-    .from('user_blocks')
-    .select('*')
-    .eq('blocker_id', userId)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.warn('Get blocked users error:', error.message);
-    return [];
+export async function getUsersWithFollowState(userIds: string[]): Promise<UserProfileWithFollowState[]> {
+  if (userIds.length === 0) return [];
+  const profiles = await FriendService.getProfiles(userIds);
+  const results: UserProfileWithFollowState[] = [];
+  for (const p of profiles) {
+    const rel = await getFollowRelationship(p.id);
+    results.push({ ...p, followRelationship: rel, isMutual: rel === 'mutual' });
   }
-
-  return (data || []) as UserBlock[];
+  return results;
 }
-
-// ─── Check if target user follows me ───
-
-export async function doesUserFollowMe(targetUserId: string): Promise<boolean> {
-  const userId = await getAuthUserId();
-  if (!userId) return false;
-
-  const { data } = await supabase
-    .from('follows')
-    .select('id')
-    .eq('follower_id', targetUserId)
-    .eq('following_id', userId)
-    .eq('status', 'accepted')
-    .maybeSingle();
-
-  return !!data;
-}
-
-// ─── Toggle Account Privacy ───
-
-export async function toggleAccountPrivacy(isPrivate: boolean): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
-
-  await supabase
-    .from('user_profiles')
-    .update({ is_private: isPrivate, updated_at: new Date().toISOString() })
-    .eq('id', userId);
-}
-
-// ─── Update Bio ───
-
-export async function updateBio(bio: string): Promise<void> {
-  const userId = await getAuthUserId();
-  if (!userId) return;
-
-  await supabase
-    .from('user_profiles')
-    .update({ bio, updated_at: new Date().toISOString() })
-    .eq('id', userId);
-}
-
-// ─── Get User Profile ───
-
-export async function getUserProfile(userId: string): Promise<UserProfile | null> {
-  const { data, error } = await supabase
-    .from('user_profiles')
-    .select('*')
-    .eq('id', userId)
-    .single();
-
-  if (error) return null;
-  return data as UserProfile;
-}
-
-// ─── Search Users (for follow) ───
-
-export async function searchUsersForFollow(query: string): Promise<UserProfile[]> {
-  if (!query || query.length < 2) return [];
-
-  const userId = await getAuthUserId();
-  if (!userId) return [];
-
-  const trimmed = query.trim();
-
-  const [usernameRes, nameRes, emailRes] = await Promise.all([
-    supabase
-      .from('user_profiles')
-      .select('*')
-      .neq('id', userId)
-      .ilike('username', `%${trimmed}%`)
-      .limit(10),
-    supabase
-      .from('user_profiles')
-      .select('*')
-      .neq('id', userId)
-      .ilike('full_name', `%${trimmed}%`)
-      .limit(10),
-    supabase
-      .from('user_profiles')
-      .select('*')
-      .neq('id', userId)
-      .ilike('email', `%${trimmed}%`)
-      .limit(10),
-  ]);
-
-  // Merge and deduplicate
-  const merged = new Map<string, UserProfile>();
-  [...(usernameRes.data || []), ...(nameRes.data || []), ...(emailRes.data || [])].forEach((u) => {
-    merged.set(u.id, u as UserProfile);
-  });
-
-  // Filter out blocked users
-  const { data: blocks } = await supabase
-    .from('user_blocks')
-    .select('blocker_id, blocked_id')
-    .or(`blocker_id.eq.${userId},blocked_id.eq.${userId}`);
-
-  const blockedIds = new Set<string>();
-  (blocks || []).forEach((b) => {
-    if (b.blocker_id === userId) blockedIds.add(b.blocked_id);
-    if (b.blocked_id === userId) blockedIds.add(b.blocker_id);
-  });
-
-  return Array.from(merged.values()).filter((u) => !blockedIds.has(u.id));
-}
-
-// ─── Get Follow-Back Suggestions (followers you don't follow back) ───
 
 export async function getFollowBackSuggestions(): Promise<Follow[]> {
-  const userId = await getAuthUserId();
-  if (!userId) return [];
+  const id = uid();
+  // People following me that I don't follow back
+  const followersQ = query(collection(db, 'follows'), where('following_id', '==', id), where('status', '==', 'accepted'));
+  const followingQ = query(collection(db, 'follows'), where('follower_id', '==', id), where('status', '==', 'accepted'));
+  const [fSnap, gSnap] = await Promise.all([getDocs(followersQ), getDocs(followingQ)]);
+  const followingSet = new Set(gSnap.docs.map((d) => d.data().following_id));
+  const suggestions = fSnap.docs
+    .filter((d) => !followingSet.has(d.data().follower_id))
+    .map((d) => ({ id: d.id, ...(d.data() as Omit<Follow, 'id'>) })) as Follow[];
 
-  // Get all accepted followers (people who follow me)
-  const { data: followers } = await supabase
-    .from('follows')
-    .select('*, follower:user_profiles!follows_follower_id_fkey(*)')
-    .eq('following_id', userId)
-    .eq('status', 'accepted')
-    .order('created_at', { ascending: false });
-
-  if (!followers || followers.length === 0) return [];
-
-  // Get all people I follow
-  const { data: following } = await supabase
-    .from('follows')
-    .select('following_id')
-    .eq('follower_id', userId)
-    .eq('status', 'accepted');
-
-  const followingIds = new Set((following || []).map((f) => f.following_id));
-
-  // Return followers that I don't follow back
-  return (followers as Follow[]).filter((f) => !followingIds.has(f.follower_id));
+  const profileIds = suggestions.map((f) => f.follower_id);
+  const profiles = await FriendService.getProfiles(profileIds);
+  const map = new Map(profiles.map((p) => [p.id, p]));
+  suggestions.forEach((f) => { 
+    const profile = map.get(f.follower_id);
+    if (profile) {
+      // Ensure id is set
+      if (!profile.id) profile.id = f.follower_id;
+      f.follower = profile;
+    }
+  });
+  return suggestions;
 }
 
-// ─── Export as namespace ───
-
 export const FollowService = {
+  followUser, unfollowUser, acceptFollowRequest, rejectFollowRequest,
+  cancelFollowRequest, removeFollower, blockUser, unblockUser,
+  getFollowers, getFollowing, getFollowRequests, getSentFollowRequests,
+  getFollowCounts, getFollowRelationship, getBlockedUsers,
+  getUsersWithFollowState, getFollowBackSuggestions,
   subscribeToChanges,
-  followUser,
-  acceptFollowRequest,
-  rejectFollowRequest,
-  cancelFollowRequest,
-  unfollowUser,
-  removeFollower,
-  blockUser,
-  unblockUser,
-  isBlocked,
-  getFollowRelationship,
-  getFollowers,
-  getFollowing,
-  getPendingFollowRequests,
-  getSentFollowRequests,
-  getFollowCounts,
-  getBlockedUsers,
-  doesUserFollowMe,
-  toggleAccountPrivacy,
-  updateBio,
-  getUserProfile,
-  searchUsersForFollow,
-  getFollowBackSuggestions,
 };

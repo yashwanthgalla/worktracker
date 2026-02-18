@@ -1,12 +1,12 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { Task, WorkSession, ProductivityMetrics } from '../types/database.types';
-import type { User } from '@supabase/supabase-js';
+import type { AppUser } from '../services/authService';
 
 interface AppState {
   // Auth
-  user: User | null;
-  setUser: (user: User | null) => void;
+  user: AppUser | null;
+  setUser: (user: AppUser | null) => void;
   
   // Tasks
   tasks: Task[];
