@@ -52,7 +52,7 @@ const defaultProfile: ProfileData = {
 
 type Section = 'profile' | 'security' | 'notifications' | 'appearance' | 'address' | 'account';
 
-const sections: { id: Section; label: string; icon: React.ElementType }[] = [
+const sections: { id: Section; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'profile', label: 'Profile', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -131,7 +131,7 @@ export const SettingsPage = () => {
     } catch (e) { toast.error('Failed to update password. You may need to re-authenticate.'); }
   };
 
-  const update = (key: keyof ProfileData, value: string | boolean) => {
+  const update = (key: keyof ProfileData, value: string | boolean): void => {
     setProfile((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -395,8 +395,8 @@ export const SettingsPage = () => {
 // ─── Sub-components ───
 
 function InputField({ icon: Icon, label, value, onChange, type = 'text', disabled = false }: {
-  icon: React.ElementType; label: string; value: string; onChange: (v: string) => void; type?: string; disabled?: boolean;
-}) {
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; label: string; value: string; onChange: (v: string) => void; type?: string; disabled?: boolean;
+}): React.ReactElement {
   return (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>

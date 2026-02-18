@@ -250,7 +250,7 @@ export const AIInsights = () => {
 
 // ─── Sub Components ───
 
-function StatsCard({ icon: Icon, label, value, color }: { icon: React.ElementType; label: string; value: number; color: 'blue' | 'green' | 'amber' | 'red' }) {
+function StatsCard({ icon: Icon, label, value, color }: { icon: React.ComponentType<{ className?: string }>; label: string; value: number; color: 'blue' | 'green' | 'amber' | 'red' }) {
   const colors = {
     blue: 'from-blue-50 to-indigo-50 border-blue-100 text-blue-600',
     green: 'from-emerald-50 to-green-50 border-emerald-100 text-emerald-600',
@@ -268,7 +268,7 @@ function StatsCard({ icon: Icon, label, value, color }: { icon: React.ElementTyp
   );
 }
 
-function PatternCard({ icon: Icon, label, value, sub, valueColor }: { icon: React.ElementType; label: string; value: string; sub: string; valueColor?: string }) {
+function PatternCard({ icon: Icon, label, value, sub, valueColor }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string; sub: string; valueColor?: string }) {
   return (
     <div className="bg-white rounded-xl border border-gray-100 p-3.5 shadow-sm">
       <div className="flex items-center gap-1.5 mb-1.5">
@@ -282,7 +282,7 @@ function PatternCard({ icon: Icon, label, value, sub, valueColor }: { icon: Reac
 }
 
 function CollapsibleSection({ icon: Icon, iconColor, iconBg, title, subtitle, children, expanded, onToggle }: {
-  id: string; icon: React.ElementType; iconColor: string; iconBg: string;
+  id: string; icon: React.ComponentType<{ className?: string }>; iconColor: string; iconBg: string;
   title: string; subtitle: string; children: React.ReactNode;
   expanded: boolean; onToggle: () => void;
 }) {

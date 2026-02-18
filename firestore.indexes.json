@@ -113,25 +113,11 @@
       ]
     },
     {
-      "collectionGroup": "notification_log",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "created_at", "order": "DESCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "read", "order": "ASCENDING" },
         { "fieldPath": "created_at", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "work_sessions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "started_at", "order": "DESCENDING" }
       ]
     }
   ],
