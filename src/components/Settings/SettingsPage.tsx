@@ -1,17 +1,20 @@
-import { useState, useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   User, Mail, Lock, MapPin, Phone, Globe, Bell, Palette, Shield,
   Save, Loader2, ChevronRight, Building2,
   AtSign, Smartphone, ArrowRight, Check, CheckCircle2,
-  Trash2, Download, LogOut,
+  Trash2, Download, LogOut, Search, X, ChevronDown, RefreshCw,
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore';
 import { AuthService } from '../../services/authService';
+import { OTPService } from '../../services/otpService';
 import { TaskService } from '../../services/taskService';
-import { db } from '../../lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { db, auth as firebaseAuth } from '../../lib/firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import toast from 'react-hot-toast';
+import { countryCodes, getDefaultCountry, type CountryCode } from '../../data/countryCodes';
+import { InputOTP, InputOTPGroup, InputOTPSlot, InputOTPSeparator } from '../ui/input-otp';
 
 // ═══════════════════════════════════════════════════════
 // Settings Page – Firestore profile, Firebase Auth
@@ -192,7 +195,7 @@ export const SettingsPage = () => {
                 <InputField icon={User} label="Full Name" value={profile.full_name} onChange={(v) => update('full_name', v)} />
                 <InputField icon={AtSign} label="Username" value={profile.username} onChange={(v) => update('username', v)} />
                 <InputField icon={Mail} label="Email" value={profile.email} onChange={(v) => update('email', v)} disabled />
-                <InputField icon={Phone} label="Phone" value={profile.phone} onChange={(v) => update('phone', v)} />
+                <InputField icon={Phone} label="Phone" value={profile.phone} onChange={(v) => update('phone', v)} disabled={!!profile.phone} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Bio</label>
@@ -200,7 +203,25 @@ export const SettingsPage = () => {
                   className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 outline-none text-sm transition-all resize-none" />
               </div>
 
-              <PhoneVerificationCard />
+              {!profile.phone ? (
+                <PhoneVerificationCard onPhoneVerified={(verifiedPhone) => {
+                  update('phone', verifiedPhone);
+                }} />
+              ) : (
+                <div className="flex items-center gap-3 p-4 rounded-xl border border-emerald-100 bg-emerald-50/50">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-emerald-700">Phone Verified</p>
+                    <p className="text-xs text-emerald-600/70">{profile.phone}</p>
+                  </div>
+                  <button
+                    onClick={() => update('phone', '')}
+                    className="text-xs text-gray-400 hover:text-red-500 transition-colors px-2 py-1 rounded-md hover:bg-red-50"
+                  >
+                    Change
+                  </button>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -426,78 +447,351 @@ function ToggleRow({ label, description, checked, onChange }: {
   );
 }
 
-function PhoneVerificationCard() {
+function PhoneVerificationCard({ onPhoneVerified }: { onPhoneVerified?: (phone: string) => void }) {
   const [phone, setPhone] = useState('');
-  const [otpCode, setOtpCode] = useState('');
+  const [otpValue, setOtpValue] = useState('');
   const [step, setStep] = useState<'idle' | 'sending' | 'verify' | 'done'>('idle');
   const [loading, setLoading] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [resendTimer, setResendTimer] = useState(0);
+  const [selectedCountry, setSelectedCountry] = useState<CountryCode>(getDefaultCountry());
+  const [showCountryPicker, setShowCountryPicker] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // Resend timer countdown
+  useEffect(() => {
+    if (resendTimer <= 0) return;
+    const t = setTimeout(() => setResendTimer((p) => p - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendTimer]);
+
+  // Auto‑focus search when picker opens
+  useEffect(() => {
+    if (showCountryPicker) setTimeout(() => searchRef.current?.focus(), 100);
+  }, [showCountryPicker]);
+
+  const filteredCountries = useMemo(() => {
+    if (!searchQuery.trim()) return countryCodes;
+    const q = searchQuery.toLowerCase();
+    return countryCodes.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.code.toLowerCase().includes(q) ||
+        c.dialCode.includes(q)
+    );
+  }, [searchQuery]);
+
+  // Build E.164 phone number
+  const getE164Phone = () => {
+    const digits = phone.replace(/\D/g, '');
+    return `${selectedCountry.dialCode}${digits}`;
+  };
 
   const sendOTP = async () => {
-    if (!phone.trim()) { toast.error('Enter a phone number'); return; }
+    const digits = phone.replace(/\D/g, '');
+    if (!digits || digits.length < 4) {
+      toast.error('Enter a valid phone number');
+      return;
+    }
     setLoading(true);
     try {
-      AuthService.initRecaptcha('recaptcha-settings');
-      await AuthService.sendPhoneSMSOTP(phone);
+      const e164 = getE164Phone();
+      console.log('[PhoneVerification] Sending OTP to:', e164);
+      await OTPService.send(e164);
       setStep('verify');
-      toast.success('OTP sent!');
-    } catch (e) {
-      toast.error('Failed to send OTP');
-      console.error(e);
+      setResendTimer(60);
+      toast.success('OTP sent successfully!');
+    } catch (e: any) {
+      console.error('[PhoneVerification] Send OTP error:', e);
+      toast.error(`Failed to send OTP: ${e?.message || 'Unknown error'}`);
     }
     setLoading(false);
   };
 
-  const verifyOTP = async () => {
-    if (otpCode.length < 6) { toast.error('Enter the 6-digit code'); return; }
-    setLoading(true);
-    try {
-      const ok = await AuthService.verifyPhoneSMSOTP(otpCode);
-      if (ok) { setStep('done'); toast.success('Phone verified!'); }
-      else toast.error('Invalid code');
-    } catch { toast.error('Verification failed'); }
-    setLoading(false);
+  const handleOtpChange = async (value: string) => {
+    setOtpValue(value);
+    if (value.length === 6) {
+      setLoading(true);
+      try {
+        const e164 = getE164Phone();
+        const ok = await OTPService.verify(e164, value);
+        if (ok) {
+          // Update phone in Firebase profile
+          try {
+            const user = firebaseAuth.currentUser;
+            if (user) {
+              await setDoc(doc(db, 'user_profiles', user.uid), {
+                phone: e164,
+                updated_at: new Date().toISOString(),
+              }, { merge: true });
+            }
+          } catch { /* best-effort profile update */ }
+          // Update the parent profile phone field
+          onPhoneVerified?.(e164);
+          setStep('done');
+          toast.success('Phone verified successfully!');
+        } else {
+          toast.error('Invalid code. Please try again.');
+          setOtpValue('');
+        }
+      } catch (e: any) {
+        console.error('[PhoneVerification] Verify error:', e);
+        toast.error('Verification failed');
+        setOtpValue('');
+      }
+      setLoading(false);
+    }
   };
 
-  useEffect(() => () => AuthService.cleanupRecaptcha(), []);
+  const handleResend = async () => {
+    if (resendTimer > 0) return;
+    setOtpValue('');
+    try {
+      const e164 = getE164Phone();
+      await OTPService.retry(e164);
+      setResendTimer(60);
+      toast.success('Code resent!');
+    } catch (e: any) {
+      toast.error(`Failed to resend: ${e?.message || 'Unknown error'}`);
+    }
+  };
+
+  // Init MSG91 on mount
+  useEffect(() => {
+    OTPService.init().catch(console.error);
+  }, []);
 
   return (
-    <div className="p-5 rounded-xl border border-gray-100 bg-gray-50/50 space-y-4">
-      <div className="flex items-center gap-2">
+    <div className="rounded-xl border border-gray-100 bg-gray-50/50 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 p-5 pb-3">
         <Smartphone className="w-5 h-5 text-emerald-500" />
         <h3 className="font-medium text-gray-900 text-sm">Phone Verification</h3>
-        {step === 'done' && <CheckCircle2 className="w-4 h-4 text-emerald-500 ml-auto" />}
+        {step === 'done' && (
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full font-medium">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            Verified
+          </span>
+        )}
       </div>
 
-      {step === 'idle' && (
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input type="tel" placeholder="+1 234 567 8900" value={phone} onChange={(e) => setPhone(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-400 outline-none text-sm" />
+      <div className="px-5 pb-5 space-y-4">
+        {/* Phone Input Step */}
+        {step === 'idle' && (
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              {/* Country Selector Button */}
+              <button
+                type="button"
+                onClick={() => setShowCountryPicker(true)}
+                className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 transition-colors text-sm shrink-0"
+              >
+                <span className="text-lg leading-none">{selectedCountry.flag}</span>
+                <span className="font-medium text-gray-700">{selectedCountry.dialCode}</span>
+                <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+              </button>
+
+              {/* Phone Input */}
+              <div className="relative flex-1">
+                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="tel"
+                  placeholder="Enter phone number"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value.replace(/[^\d\s\-()]/g, ''))}
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 outline-none text-sm transition-all"
+                />
+              </div>
+            </div>
+
+            {/* Preview */}
+            {phone.trim() && (
+              <p className="text-xs text-gray-400 px-1">
+                Will send to: <span className="font-mono text-gray-600">{getE164Phone()}</span>
+              </p>
+            )}
+
+            <button
+              onClick={sendOTP}
+              disabled={loading || !phone.trim()}
+              className="w-full px-4 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              Send OTP
+            </button>
           </div>
-          <button onClick={sendOTP} disabled={loading}
-            className="px-4 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors disabled:opacity-50 flex items-center gap-1.5">
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
-            Send OTP
-          </button>
-        </div>
-      )}
+        )}
 
-      {step === 'verify' && (
-        <div className="flex gap-2">
-          <input type="text" placeholder="Enter 6-digit code" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-            className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-400 outline-none text-sm text-center tracking-widest" />
-          <button onClick={verifyOTP} disabled={loading}
-            className="px-4 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 disabled:opacity-50 flex items-center gap-1.5">
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-            Verify
-          </button>
-        </div>
-      )}
+        {/* OTP Verification Step */}
+        {step === 'verify' && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500">
+              Enter the 6-digit code sent to{' '}
+              <span className="font-medium text-gray-800">
+                {selectedCountry.flag} {getE164Phone()}
+              </span>
+            </p>
 
-      {step === 'done' && <p className="text-sm text-emerald-600">Phone number verified successfully!</p>}
-      <div id="recaptcha-settings" ref={containerRef} />
+            {/* OTP Input */}
+            <div className="flex justify-center py-2">
+              <InputOTP maxLength={6} value={otpValue} onChange={handleOtpChange} disabled={loading}>
+                <InputOTPGroup>
+                  <InputOTPSlot index={0} />
+                  <InputOTPSlot index={1} />
+                  <InputOTPSlot index={2} />
+                </InputOTPGroup>
+                <InputOTPSeparator className="mx-2 text-gray-300" />
+                <InputOTPGroup>
+                  <InputOTPSlot index={3} />
+                  <InputOTPSlot index={4} />
+                  <InputOTPSlot index={5} />
+                </InputOTPGroup>
+              </InputOTP>
+            </div>
+
+            <p className="text-xs text-gray-400 text-center">
+              {loading ? 'Verifying...' : 'Code auto-submits when all digits are entered'}
+            </p>
+
+            {/* Resend / Back */}
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => { setStep('idle'); setOtpValue(''); }}
+                className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                ← Change number
+              </button>
+              {resendTimer > 0 ? (
+                <span className="text-xs text-gray-400">
+                  Resend in <span className="font-medium text-gray-600">{resendTimer}s</span>
+                </span>
+              ) : (
+                <button
+                  onClick={handleResend}
+                  disabled={loading}
+                  className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-700 font-medium transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Resend Code
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Done */}
+        {step === 'done' && (
+          <p className="text-sm text-emerald-600 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4" />
+            Phone number verified and linked to your account!
+          </p>
+        )}
+      </div>
+
+      {/* reCAPTCHA container - no longer needed with MSG91 */}
+
+      {/* Country Picker Modal */}
+      <AnimatePresence>
+        {showCountryPicker && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => { setShowCountryPicker(false); setSearchQuery(''); }}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed inset-4 md:inset-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-full md:max-w-md bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 flex flex-col max-h-[80vh]"
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between p-5 border-b border-gray-100">
+                <h3 className="text-lg font-semibold text-gray-900">Select Country</h3>
+                <button
+                  onClick={() => { setShowCountryPicker(false); setSearchQuery(''); }}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+
+              {/* Search */}
+              <div className="p-4 border-b border-gray-100">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    ref={searchRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search country or dial code..."
+                    className="w-full pl-10 pr-8 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 outline-none text-sm transition-all"
+                    autoFocus
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-gray-400 mt-2 px-1">
+                  {filteredCountries.length} {filteredCountries.length === 1 ? 'country' : 'countries'} found
+                </p>
+              </div>
+
+              {/* Country List */}
+              <div className="flex-1 overflow-y-auto p-2">
+                {filteredCountries.length === 0 ? (
+                  <div className="text-center py-8 space-y-2">
+                    <Globe className="w-8 h-8 text-gray-300 mx-auto" />
+                    <p className="text-gray-500 text-sm">No countries found</p>
+                    <p className="text-gray-400 text-xs">Try a different search term</p>
+                  </div>
+                ) : (
+                  <div className="space-y-0.5">
+                    {filteredCountries.map((country) => {
+                      const isSelected = country.code === selectedCountry.code;
+                      return (
+                        <button
+                          key={country.code}
+                          onClick={() => {
+                            setSelectedCountry(country);
+                            setShowCountryPicker(false);
+                            setSearchQuery('');
+                          }}
+                          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-left ${
+                            isSelected
+                              ? 'bg-emerald-50 border border-emerald-200'
+                              : 'hover:bg-gray-50 border border-transparent'
+                          }`}
+                        >
+                          <span className="text-2xl leading-none">{country.flag}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-sm font-medium truncate ${isSelected ? 'text-emerald-700' : 'text-gray-900'}`}>
+                              {country.name}
+                            </p>
+                            <p className="text-xs text-gray-400">{country.code}</p>
+                          </div>
+                          <span className={`text-sm font-mono font-medium ${isSelected ? 'text-emerald-600' : 'text-gray-400'}`}>
+                            {country.dialCode}
+                          </span>
+                          {isSelected && <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

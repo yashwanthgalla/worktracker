@@ -1,9 +1,11 @@
 ﻿import { db } from '../lib/firebase';
 import { auth } from '../lib/firebase';
+import { storage } from '../lib/firebase';
 import {
   collection, doc, addDoc, getDoc, getDocs, updateDoc, query, where, orderBy, onSnapshot, deleteDoc,
   setDoc,
 } from 'firebase/firestore';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import type { Conversation, ConversationParticipant, Message, UserProfile } from '../types/database.types';
 
 // ═══════════════════════════════════════════════════════
@@ -158,28 +160,52 @@ export async function getMessages(conversationId: string): Promise<Message[]> {
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Message, 'id'>) }));
 }
 
-export async function sendMessage(conversationId: string, content: string): Promise<Message> {
+export async function sendMessage(
+  conversationId: string,
+  content: string,
+  options?: {
+    message_type?: Message['message_type'];
+    media_url?: string;
+    media_thumbnail?: string;
+    media_duration?: number;
+    media_filename?: string;
+  }
+): Promise<Message> {
   const id = uid();
-  const data = {
+  const msgType = options?.message_type || 'text';
+  const data: Record<string, unknown> = {
     conversation_id: conversationId,
     sender_id: id,
     content,
-    message_type: 'text' as const,
+    message_type: msgType,
     metadata: {},
     is_edited: false,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    read_by: { [id]: new Date().toISOString() },
+    delivered_to: { [id]: new Date().toISOString() },
   };
-  const ref = await addDoc(collection(db, 'conversations', conversationId, 'messages'), data);
+  if (options?.media_url) data.media_url = options.media_url;
+  if (options?.media_thumbnail) data.media_thumbnail = options.media_thumbnail;
+  if (options?.media_duration) data.media_duration = options.media_duration;
+  if (options?.media_filename) data.media_filename = options.media_filename;
+
+  const refDoc = await addDoc(collection(db, 'conversations', conversationId, 'messages'), data);
+
+  // Build preview text
+  let previewContent = content;
+  if (msgType === 'image') previewContent = '📷 Photo';
+  else if (msgType === 'video') previewContent = '🎥 Video';
+  else if (msgType === 'voice') previewContent = '🎙️ Voice message';
 
   // Update conversation timestamp + last message preview
   await updateDoc(doc(db, 'conversations', conversationId), {
     updated_at: new Date().toISOString(),
     last_message: {
-      id: ref.id,
-      content,
+      id: refDoc.id,
+      content: previewContent,
       sender_id: id,
-      message_type: 'text',
+      message_type: msgType,
       created_at: data.created_at,
     },
   });
@@ -195,7 +221,7 @@ export async function sendMessage(conversationId: string, content: string): Prom
         user_id: pid,
         type: 'message',
         title: 'New Message',
-        body: `${myProfile?.full_name || 'Someone'}: ${content.slice(0, 50)}`,
+        body: `${myProfile?.full_name || 'Someone'}: ${previewContent.slice(0, 50)}`,
         data: { conversation_id: conversationId },
         read: false,
         created_at: new Date().toISOString(),
@@ -203,7 +229,234 @@ export async function sendMessage(conversationId: string, content: string): Prom
     }
   }
 
-  return { id: ref.id, ...data };
+  return { id: refDoc.id, ...data } as unknown as Message;
+}
+
+// ─── Image Compression ───
+
+function compressImage(file: File | Blob, maxWidth = 1200, maxHeight = 1200, quality = 0.75): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      let { width, height } = img;
+
+      // Scale down if larger than max dimensions
+      if (width > maxWidth || height > maxHeight) {
+        const ratio = Math.min(maxWidth / width, maxHeight / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas not supported')); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+
+      canvas.toBlob(
+        (blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error('Compression failed'));
+        },
+        'image/jpeg',
+        quality,
+      );
+    };
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = URL.createObjectURL(file instanceof File ? file : new File([file], 'image'));
+  });
+}
+
+function generateImageThumbnail(file: File | Blob, size = 200, quality = 0.5): Promise<Blob> {
+  return compressImage(file, size, size, quality);
+}
+
+function generateVideoThumbnail(file: File | Blob): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+
+    video.onloadeddata = () => {
+      // Seek to 1 second or 10% of duration — whichever is less
+      video.currentTime = Math.min(1, video.duration * 0.1);
+    };
+
+    video.onseeked = () => {
+      const canvas = document.createElement('canvas');
+      const scale = Math.min(300 / video.videoWidth, 300 / video.videoHeight, 1);
+      canvas.width = Math.round(video.videoWidth * scale);
+      canvas.height = Math.round(video.videoHeight * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas not supported')); return; }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(
+        (blob) => {
+          URL.revokeObjectURL(video.src);
+          if (blob) resolve(blob);
+          else reject(new Error('Thumbnail generation failed'));
+        },
+        'image/jpeg',
+        0.6,
+      );
+    };
+
+    video.onerror = () => {
+      URL.revokeObjectURL(video.src);
+      reject(new Error('Failed to load video'));
+    };
+
+    video.src = URL.createObjectURL(file instanceof File ? file : new File([file], 'video'));
+  });
+}
+
+// ─── Media upload (resumable with progress) ───
+
+export type UploadProgressCallback = (progress: number) => void;
+
+export async function uploadMedia(
+  conversationId: string,
+  file: File | Blob,
+  type: 'image' | 'video' | 'voice',
+  filename?: string,
+  onProgress?: UploadProgressCallback,
+): Promise<{ url: string; filename: string }> {
+  const id = uid();
+  const ext = filename ? filename.split('.').pop() : (type === 'voice' ? 'webm' : type === 'image' ? 'jpg' : 'mp4');
+  const storagePath = `conversations/${conversationId}/${type}/${id}_${Date.now()}.${ext}`;
+  const storageRef = ref(storage, storagePath);
+
+  return new Promise((resolve, reject) => {
+    const uploadTask = uploadBytesResumable(storageRef, file);
+
+    uploadTask.on(
+      'state_changed',
+      (snapshot) => {
+        const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+        onProgress?.(progress);
+      },
+      (error) => reject(error),
+      async () => {
+        try {
+          const url = await getDownloadURL(uploadTask.snapshot.ref);
+          resolve({ url, filename: filename || `${type}_${Date.now()}.${ext}` });
+        } catch (e) {
+          reject(e);
+        }
+      },
+    );
+  });
+}
+
+async function uploadThumbnail(
+  conversationId: string,
+  thumbnail: Blob,
+  _type: 'image' | 'video',
+): Promise<string> {
+  const id = uid();
+  const storagePath = `conversations/${conversationId}/thumbnails/${id}_${Date.now()}.jpg`;
+  const storageRef = ref(storage, storagePath);
+  const uploadTask = uploadBytesResumable(storageRef, thumbnail);
+  await new Promise<void>((resolve, reject) => {
+    uploadTask.on('state_changed', null, reject, () => resolve());
+  });
+  return getDownloadURL(uploadTask.snapshot.ref);
+}
+
+export async function sendMediaMessage(
+  conversationId: string,
+  file: File | Blob,
+  type: 'image' | 'video' | 'voice',
+  options?: { duration?: number; filename?: string; onProgress?: UploadProgressCallback },
+): Promise<Message> {
+  let processedFile = file;
+  let thumbnailUrl: string | undefined;
+
+  if (type === 'image') {
+    // Compress the image before uploading
+    try {
+      const compressed = await compressImage(file);
+      // Only use compressed if it's actually smaller
+      if (compressed.size < file.size) {
+        processedFile = compressed;
+        console.log(`[Media] Image compressed: ${(file.size / 1024).toFixed(0)}KB → ${(compressed.size / 1024).toFixed(0)}KB`);
+      }
+    } catch (e) {
+      console.warn('[Media] Image compression failed, uploading original:', e);
+    }
+
+    // Generate thumbnail
+    try {
+      const thumb = await generateImageThumbnail(file);
+      thumbnailUrl = await uploadThumbnail(conversationId, thumb, 'image');
+    } catch (e) {
+      console.warn('[Media] Thumbnail generation failed:', e);
+    }
+  }
+
+  if (type === 'video') {
+    // Generate video thumbnail
+    try {
+      const thumb = await generateVideoThumbnail(file);
+      thumbnailUrl = await uploadThumbnail(conversationId, thumb, 'video');
+    } catch (e) {
+      console.warn('[Media] Video thumbnail generation failed:', e);
+    }
+  }
+
+  const { url, filename } = await uploadMedia(
+    conversationId,
+    processedFile,
+    type,
+    options?.filename || (file instanceof File ? file.name : undefined),
+    options?.onProgress,
+  );
+
+  const contentMap = { image: '📷 Photo', video: '🎥 Video', voice: '🎙️ Voice message' };
+  return sendMessage(conversationId, contentMap[type], {
+    message_type: type,
+    media_url: url,
+    media_thumbnail: thumbnailUrl,
+    media_filename: filename,
+    media_duration: options?.duration,
+  });
+}
+
+// ─── Read receipts ───
+
+export async function markMessageAsRead(conversationId: string, messageId: string): Promise<void> {
+  const id = uid();
+  const msgRef = doc(db, 'conversations', conversationId, 'messages', messageId);
+  const snap = await getDoc(msgRef);
+  if (!snap.exists()) return;
+  const readBy = (snap.data().read_by as Record<string, string>) || {};
+  if (readBy[id]) return; // already read
+  readBy[id] = new Date().toISOString();
+  await updateDoc(msgRef, { read_by: readBy });
+}
+
+export async function markConversationAsRead(conversationId: string): Promise<void> {
+  const id = uid();
+  // Get all unread messages from others
+  const q = query(
+    collection(db, 'conversations', conversationId, 'messages'),
+    orderBy('created_at', 'desc'),
+  );
+  const snap = await getDocs(q);
+  const batch: Promise<void>[] = [];
+  for (const d of snap.docs) {
+    const data = d.data();
+    if (data.sender_id === id) continue;
+    const readBy = (data.read_by as Record<string, string>) || {};
+    if (readBy[id]) continue;
+    readBy[id] = new Date().toISOString();
+    batch.push(updateDoc(d.ref, { read_by: readBy }));
+  }
+  await Promise.all(batch);
+  // Also update the participant's last_read_at
+  await updateLastReadAt(conversationId);
 }
 
 export async function editMessage(conversationId: string, messageId: string, content: string): Promise<void> {
@@ -304,4 +557,8 @@ export const MessageService = {
   // Conversation participants
   getConversationParticipants, addConversationParticipant, removeConversationParticipant,
   updateLastReadAt,
+  // Media
+  uploadMedia, sendMediaMessage,
+  // Read receipts
+  markMessageAsRead, markConversationAsRead,
 };

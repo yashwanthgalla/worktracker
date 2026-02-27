@@ -218,11 +218,19 @@ export interface Message {
   conversation_id: string;
   sender_id: string;
   content: string;
-  message_type: 'text' | 'image' | 'file' | 'system';
+  message_type: 'text' | 'image' | 'video' | 'voice' | 'file' | 'system';
   metadata: Record<string, unknown>;
   is_edited: boolean;
   created_at: string;
   updated_at: string;
+  // Media fields
+  media_url?: string;
+  media_thumbnail?: string;
+  media_duration?: number; // seconds, for voice/video
+  media_filename?: string;
+  // Read receipts
+  read_by?: Record<string, string>; // userId -> timestamp
+  delivered_to?: Record<string, string>; // userId -> timestamp
   // Joined
   sender?: UserProfile;
 }

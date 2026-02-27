@@ -158,12 +158,28 @@ export function useMessages(conversationId: string | null) {
     return unsub;
   }, [conversationId, userId]);
 
-  const send = useCallback(async (content: string): Promise<Message | null> => {
+  const send = useCallback(async (content: string, options?: {
+    message_type?: 'text' | 'image' | 'video' | 'voice' | 'file' | 'system';
+    media_url?: string;
+    media_thumbnail?: string;
+    media_duration?: number;
+    media_filename?: string;
+  }): Promise<Message | null> => {
     if (!conversationId || !content.trim()) return null;
-    try { return await MessageService.sendMessage(conversationId, content); } catch (e) { console.error('Send failed:', e); return null; }
+    try { return await MessageService.sendMessage(conversationId, content, options); } catch (e) { console.error('Send failed:', e); return null; }
   }, [conversationId]);
 
-  return { messages, loading, send };
+  const sendMedia = useCallback(async (file: File | Blob, type: 'image' | 'video' | 'voice', options?: { duration?: number; filename?: string; onProgress?: (progress: number) => void }): Promise<Message | null> => {
+    if (!conversationId) return null;
+    try { return await MessageService.sendMediaMessage(conversationId, file, type, options); } catch (e) { console.error('Media send failed:', e); return null; }
+  }, [conversationId]);
+
+  const markRead = useCallback(async () => {
+    if (!conversationId) return;
+    try { await MessageService.markConversationAsRead(conversationId); } catch (e) { console.error('Mark read failed:', e); }
+  }, [conversationId]);
+
+  return { messages, loading, send, sendMedia, markRead };
 }
 
 // ─── useRealtimeNotifications ───

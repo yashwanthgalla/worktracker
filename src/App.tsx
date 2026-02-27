@@ -30,19 +30,35 @@ function AppContent() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check initial session
-    AuthService.getCurrentUser().then((u) => {
+    let cancelled = false;
+
+    const init = async () => {
+      // Handle Google redirect result first (if returning from redirect flow)
+      const redirectUser = await AuthService.checkRedirectResult();
+      if (cancelled) return;
+      if (redirectUser) {
+        setUser(redirectUser);
+        FriendService.ensureProfile().catch(console.warn);
+        setLoading(false);
+        return;
+      }
+
+      // Check initial session
+      const u = await AuthService.getCurrentUser();
+      if (cancelled) return;
       setUser(u);
       if (u) FriendService.ensureProfile().catch(console.warn);
       setLoading(false);
-    });
+    };
+
+    init();
 
     // Listen for auth changes
     const unsub = AuthService.onAuthStateChange((u) => {
       setUser(u);
       if (u) FriendService.ensureProfile().catch(console.warn);
     });
-    return unsub;
+    return () => { cancelled = true; unsub(); };
   }, [setUser]);
 
   if (loading) {

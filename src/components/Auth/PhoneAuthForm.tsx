@@ -1,15 +1,17 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AuthService } from '../../services/authService';
+import { OTPService } from '../../services/otpService';
 import { useAppStore } from '../../store/appStore';
 import toast from 'react-hot-toast';
 import {
-  Phone, ArrowRight, ArrowLeft, Loader2, CheckCircle, Shield, ChevronDown, Search, X,
+  Phone, ArrowRight, ArrowLeft, Loader2, CheckCircle, Shield, ChevronDown, Search, X, RefreshCw, Globe,
 } from 'lucide-react';
 import { countryCodes, getDefaultCountry, type CountryCode } from '../../data/countryCodes';
+import { InputOTP, InputOTPGroup, InputOTPSlot, InputOTPSeparator } from '../ui/input-otp';
 
 // ═══════════════════════════════════════════════════════
-// Phone Auth Form – Firebase Phone Authentication
+// Phone Auth Form – MSG91 OTP + Firebase Sign In
 // Steps: phone-input → verify-code
 // ═══════════════════════════════════════════════════════
 
@@ -20,22 +22,20 @@ export const PhoneAuthForm = () => {
   const [step, setStep] = useState<Step>('phone-input');
   const [selectedCountry, setSelectedCountry] = useState<CountryCode>(getDefaultCountry());
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
+  const [otpValue, setOtpValue] = useState('');
   const [loading, setLoading] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [fullPhoneNumber, setFullPhoneNumber] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
-  const recaptchaRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<number | null>(null);
+  const countrySearchRef = useRef<HTMLInputElement>(null);
+  const countryListRef = useRef<HTMLDivElement>(null);
 
-  // Initialize reCAPTCHA on mount
+  // Initialize MSG91 on mount
   useEffect(() => {
-    if (recaptchaRef.current) {
-      AuthService.initRecaptcha('recaptcha-container');
-    }
+    OTPService.init().catch(console.error);
     return () => {
-      AuthService.cleanupRecaptcha();
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
@@ -52,12 +52,32 @@ export const PhoneAuthForm = () => {
     }
   }, [resendTimer]);
 
-  // Filter countries by search query
-  const filteredCountries = countryCodes.filter((country) =>
-    country.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    country.dialCode.includes(searchQuery) ||
-    country.code.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Focus country search when picker opens
+  useEffect(() => {
+    if (showCountryPicker) {
+      setTimeout(() => countrySearchRef.current?.focus(), 100);
+    } else {
+      setSearchQuery('');
+    }
+  }, [showCountryPicker]);
+
+  // Filter countries by search query (memoized for real-time search)
+  const filteredCountries = useMemo(() => {
+    if (!searchQuery.trim()) return countryCodes;
+    const q = searchQuery.toLowerCase().trim();
+    return countryCodes.filter((country) =>
+      country.name.toLowerCase().includes(q) ||
+      country.dialCode.includes(q) ||
+      country.code.toLowerCase().includes(q)
+    );
+  }, [searchQuery]);
+
+  // Scroll country list to top when search changes
+  useEffect(() => {
+    if (countryListRef.current) {
+      countryListRef.current.scrollTop = 0;
+    }
+  }, [searchQuery]);
 
   // Format phone number for display
   const formatPhoneDisplay = (num: string) => {
@@ -75,15 +95,18 @@ export const PhoneAuthForm = () => {
     }
   };
 
-  // Handle verification code input
-  const handleCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value.replace(/\D/g, ''); // Only digits
-    if (value.length <= 6) {
-      setVerificationCode(value);
+  // Auto-submit OTP when all 6 digits are entered
+  const handleOtpChange = (value: string) => {
+    setOtpValue(value);
+    if (value.length === 6) {
+      // Auto-submit after a brief delay for UX
+      setTimeout(() => {
+        submitVerification(value);
+      }, 200);
     }
   };
 
-  // Send SMS verification code
+  // Send SMS verification code via MSG91
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!phoneNumber || phoneNumber.length < 10) {
@@ -93,11 +116,11 @@ export const PhoneAuthForm = () => {
 
     setLoading(true);
     try {
-      const fullPhoneNumber = `${selectedCountry.dialCode}${phoneNumber}`;
-      const id = await AuthService.sendPhoneVerificationCode(fullPhoneNumber);
-      setVerificationId(id);
+      const phone = `${selectedCountry.dialCode}${phoneNumber}`;
+      setFullPhoneNumber(phone);
+      await OTPService.send(phone);
       setStep('verify-code');
-      setResendTimer(60); // 60 seconds before resend
+      setResendTimer(60);
       toast.success('Verification code sent!');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to send verification code';
@@ -106,41 +129,54 @@ export const PhoneAuthForm = () => {
     setLoading(false);
   };
 
-  // Verify SMS code and complete sign in
-  const handleVerifyCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!verificationCode || verificationCode.length !== 6) {
+  // Verify OTP via MSG91 then sign in via Firebase
+  const submitVerification = async (code?: string) => {
+    const codeToVerify = code || otpValue;
+    if (!codeToVerify || codeToVerify.length !== 6) {
       toast.error('Please enter the 6-digit code');
       return;
     }
 
-    if (!verificationId) {
+    if (!fullPhoneNumber) {
       toast.error('No verification in progress');
       return;
     }
 
     setLoading(true);
     try {
-      const { user } = await AuthService.signInWithPhoneNumber(verificationId, verificationCode);
+      const verified = await OTPService.verify(fullPhoneNumber, codeToVerify);
+      if (!verified) {
+        toast.error('Invalid verification code');
+        setOtpValue('');
+        setLoading(false);
+        return;
+      }
+      // OTP verified — now sign in / create user in Firebase
+      // Use custom token or direct Firestore profile creation
+      const { user } = await AuthService.signInWithPhoneOTP(fullPhoneNumber);
       setUser(user);
       toast.success('Welcome!');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Invalid verification code';
+      const msg = err instanceof Error ? err.message : 'Verification failed';
       toast.error(msg);
-      setVerificationCode('');
+      setOtpValue('');
     }
     setLoading(false);
   };
 
-  // Resend verification code
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    submitVerification();
+  };
+
+  // Resend verification code via MSG91
   const handleResendCode = async () => {
     if (resendTimer > 0) return;
     setLoading(true);
     try {
-      const fullPhoneNumber = `${selectedCountry.dialCode}${phoneNumber}`;
-      const id = await AuthService.sendPhoneVerificationCode(fullPhoneNumber);
-      setVerificationId(id);
+      await OTPService.retry(fullPhoneNumber);
       setResendTimer(60);
+      setOtpValue('');
       toast.success('Code resent!');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to resend code';
@@ -152,13 +188,11 @@ export const PhoneAuthForm = () => {
   // Go back to phone input
   const handleGoBack = () => {
     setStep('phone-input');
-    setVerificationCode('');
+    setOtpValue('');
   };
 
   return (
     <div className="relative w-full max-w-md mx-auto">
-      {/* reCAPTCHA container (invisible) */}
-      <div ref={recaptchaRef} id="recaptcha-container" />
 
       <AnimatePresence mode="wait">
         {step === 'phone-input' && (
@@ -188,15 +222,15 @@ export const PhoneAuthForm = () => {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-300">Phone Number</label>
                 <div className="flex gap-2">
-                  {/* Country Selector */}
+                  {/* Country Selector - Enhanced with real-time preview */}
                   <button
                     type="button"
                     onClick={() => setShowCountryPicker(true)}
-                    className="flex items-center gap-2 px-3 py-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all duration-200"
+                    className="flex items-center gap-2 px-3 py-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 hover:border-white/20 transition-all duration-200 group"
                   >
-                    <span className="text-2xl">{selectedCountry.flag}</span>
+                    <span className="text-2xl leading-none">{selectedCountry.flag}</span>
                     <span className="text-sm font-medium text-gray-300">{selectedCountry.dialCode}</span>
-                    <ChevronDown className="w-4 h-4 text-gray-400" />
+                    <ChevronDown className="w-4 h-4 text-gray-400 group-hover:text-gray-200 transition-colors" />
                   </button>
 
                   {/* Phone Number Input */}
@@ -212,8 +246,9 @@ export const PhoneAuthForm = () => {
                   </div>
                 </div>
                 {phoneNumber && (
-                  <p className="text-xs text-gray-400">
-                    Full number: {selectedCountry.dialCode} {formatPhoneDisplay(phoneNumber)}
+                  <p className="text-xs text-gray-400 flex items-center gap-1.5">
+                    <Globe className="w-3 h-3" />
+                    {selectedCountry.flag} {selectedCountry.name} &middot; {selectedCountry.dialCode} {formatPhoneDisplay(phoneNumber)}
                   </p>
                 )}
               </div>
@@ -261,87 +296,125 @@ export const PhoneAuthForm = () => {
             exit={{ opacity: 0, x: -20 }}
             className="space-y-6"
           >
-            {/* Header */}
-            <div className="text-center space-y-2">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-linear-to-br from-green-500 to-blue-600 text-white mb-4">
-                <CheckCircle className="w-8 h-8" />
-              </div>
-              <h2 className="text-3xl font-bold bg-linear-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-                Verify Your Phone
-              </h2>
-              <p className="text-gray-400 text-sm">
-                Enter the 6-digit code sent to<br />
-                <span className="font-medium text-white">
-                  {selectedCountry.dialCode} {formatPhoneDisplay(phoneNumber)}
-                </span>
-              </p>
-            </div>
-
-            {/* Verification Code Form */}
-            <form onSubmit={handleVerifyCode} className="space-y-4">
-              {/* Code Input */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-300">Verification Code</label>
-                <input
-                  type="text"
-                  value={verificationCode}
-                  onChange={handleCodeChange}
-                  placeholder="000000"
-                  maxLength={6}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white text-center text-2xl font-mono tracking-[0.5em] placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500/50 focus:border-green-500/50 transition-all duration-200"
-                  disabled={loading}
-                  autoFocus
-                />
+            {/* OTP Card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+              {/* Card Header */}
+              <div className="p-6 pb-4 border-b border-white/5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="flex items-center justify-center w-10 h-10 rounded-full bg-linear-to-br from-green-500 to-blue-600 text-white">
+                    <Shield className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-white">Verify your login</h2>
+                    <p className="text-sm text-gray-400">
+                      Enter the 6-digit code sent to{' '}
+                      <span className="font-medium text-white">
+                        {selectedCountry.flag} {selectedCountry.dialCode} {formatPhoneDisplay(phoneNumber)}
+                      </span>
+                    </p>
+                  </div>
+                </div>
               </div>
 
-              {/* Submit Button */}
-              <button
-                type="submit"
-                disabled={loading || verificationCode.length !== 6}
-                className="relative group w-full py-3 px-4 bg-linear-to-r from-green-500 to-blue-600 text-white font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-green-500/25 transition-all duration-200"
-              >
-                <span className="flex items-center justify-center gap-2">
-                  {loading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      Verifying...
-                    </>
-                  ) : (
-                    <>
-                      Verify & Sign In
-                      <CheckCircle className="w-5 h-5" />
-                    </>
-                  )}
-                </span>
-              </button>
-            </form>
+              {/* Card Content */}
+              <div className="p-6">
+                <form onSubmit={handleVerifyCode} className="space-y-5">
+                  {/* OTP Label + Resend */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-gray-300">Verification Code</label>
+                      {resendTimer > 0 ? (
+                        <span className="text-xs text-gray-500">
+                          Resend in <span className="font-medium text-gray-300">{resendTimer}s</span>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleResendCode}
+                          disabled={loading}
+                          className="flex items-center gap-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1 rounded-md border border-blue-500/20 hover:border-blue-500/40 bg-blue-500/5 hover:bg-blue-500/10"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          Resend Code
+                        </button>
+                      )}
+                    </div>
 
-            {/* Resend Code */}
-            <div className="text-center space-y-2">
-              {resendTimer > 0 ? (
-                <p className="text-sm text-gray-400">
-                  Resend code in <span className="font-medium text-white">{resendTimer}s</span>
-                </p>
-              ) : (
+                    {/* OTP Input */}
+                    <div className="flex justify-center">
+                      <InputOTP
+                        maxLength={6}
+                        value={otpValue}
+                        onChange={handleOtpChange}
+                        disabled={loading}
+                        variant="dark"
+                      >
+                        <InputOTPGroup>
+                          <InputOTPSlot index={0} />
+                          <InputOTPSlot index={1} />
+                          <InputOTPSlot index={2} />
+                        </InputOTPGroup>
+                        <InputOTPSeparator className="mx-2" />
+                        <InputOTPGroup>
+                          <InputOTPSlot index={3} />
+                          <InputOTPSlot index={4} />
+                          <InputOTPSlot index={5} />
+                        </InputOTPGroup>
+                      </InputOTP>
+                    </div>
+
+                    <p className="text-xs text-gray-500 text-center">
+                      Code auto-submits when all digits are entered
+                    </p>
+                  </div>
+
+                  {/* Verify Button */}
+                  <button
+                    type="submit"
+                    disabled={loading || otpValue.length !== 6}
+                    className="relative group w-full py-3 px-4 bg-linear-to-r from-green-500 to-blue-600 text-white font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-green-500/25 transition-all duration-200"
+                  >
+                    <span className="flex items-center justify-center gap-2">
+                      {loading ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          Verifying...
+                        </>
+                      ) : (
+                        <>
+                          Verify & Sign In
+                          <CheckCircle className="w-5 h-5" />
+                        </>
+                      )}
+                    </span>
+                  </button>
+                </form>
+              </div>
+
+              {/* Card Footer */}
+              <div className="px-6 pb-6 space-y-3">
+                <div className="text-center text-xs text-gray-500">
+                  Having trouble?{' '}
+                  <button
+                    onClick={handleResendCode}
+                    disabled={loading || resendTimer > 0}
+                    className="text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors disabled:text-gray-600 disabled:no-underline disabled:cursor-not-allowed"
+                  >
+                    Request a new code
+                  </button>
+                </div>
+
+                {/* Back Button */}
                 <button
-                  onClick={handleResendCode}
+                  onClick={handleGoBack}
                   disabled={loading}
-                  className="text-sm text-blue-400 hover:text-blue-300 font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex items-center justify-center gap-2 w-full py-2 text-sm text-gray-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Resend Code
+                  <ArrowLeft className="w-4 h-4" />
+                  Change Phone Number
                 </button>
-              )}
+              </div>
             </div>
-
-            {/* Back Button */}
-            <button
-              onClick={handleGoBack}
-              disabled={loading}
-              className="flex items-center justify-center gap-2 w-full py-2 text-sm text-gray-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Change Phone Number
-            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -382,41 +455,71 @@ export const PhoneAuthForm = () => {
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                   <input
+                    ref={countrySearchRef}
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search country or code..."
-                    className="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all"
+                    placeholder="Search country or dial code..."
+                    className="w-full pl-10 pr-8 py-2.5 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all text-sm"
+                    autoFocus
                   />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
+                {/* Result count */}
+                <p className="text-xs text-gray-500 mt-2 px-1">
+                  {filteredCountries.length} {filteredCountries.length === 1 ? 'country' : 'countries'} found
+                </p>
               </div>
 
               {/* Country List */}
-              <div className="flex-1 overflow-y-auto p-2">
+              <div ref={countryListRef} className="flex-1 overflow-y-auto p-2">
                 {filteredCountries.length === 0 ? (
-                  <div className="text-center py-8 text-gray-400">
-                    No countries found
+                  <div className="text-center py-8 space-y-2">
+                    <Globe className="w-8 h-8 text-gray-600 mx-auto" />
+                    <p className="text-gray-400 text-sm">No countries found</p>
+                    <p className="text-gray-500 text-xs">Try a different search term</p>
                   </div>
                 ) : (
-                  <div className="space-y-1">
-                    {filteredCountries.map((country) => (
-                      <button
-                        key={country.code}
-                        onClick={() => {
-                          setSelectedCountry(country);
-                          setShowCountryPicker(false);
-                          setSearchQuery('');
-                        }}
-                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 rounded-lg transition-colors text-left"
-                      >
-                        <span className="text-2xl">{country.flag}</span>
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-white">{country.name}</p>
-                          <p className="text-xs text-gray-400">{country.code}</p>
-                        </div>
-                        <span className="text-sm font-medium text-gray-400">{country.dialCode}</span>
-                      </button>
-                    ))}
+                  <div className="space-y-0.5">
+                    {filteredCountries.map((country) => {
+                      const isSelected = country.code === selectedCountry.code;
+                      return (
+                        <button
+                          key={country.code}
+                          onClick={() => {
+                            setSelectedCountry(country);
+                            setShowCountryPicker(false);
+                            setSearchQuery('');
+                          }}
+                          className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-150 text-left ${
+                            isSelected
+                              ? 'bg-blue-500/15 border border-blue-500/30 ring-1 ring-blue-500/20'
+                              : 'hover:bg-white/5 border border-transparent'
+                          }`}
+                        >
+                          <span className="text-2xl leading-none">{country.flag}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-sm font-medium truncate ${isSelected ? 'text-blue-300' : 'text-white'}`}>
+                              {country.name}
+                            </p>
+                            <p className="text-xs text-gray-400">{country.code}</p>
+                          </div>
+                          <span className={`text-sm font-mono font-medium ${isSelected ? 'text-blue-400' : 'text-gray-400'}`}>
+                            {country.dialCode}
+                          </span>
+                          {isSelected && (
+                            <CheckCircle className="w-4 h-4 text-blue-400 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
