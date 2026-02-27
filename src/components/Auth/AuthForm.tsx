@@ -131,7 +131,7 @@ export const AuthForm = () => {
         </div>
         <div className="relative z-10">
           <div className="flex items-center gap-3 mb-16">
-            <img src="/Logo.png" alt="WorkTracker" className="w-10 h-10 rounded-xl object-contain" />
+            <img src="/logo.png" alt="WorkTracker" className="w-10 h-10 rounded-xl object-contain" />
             <span className="text-white text-xl font-semibold">WorkTracker</span>
           </div>
           <h1 className="text-4xl font-bold text-white leading-tight mb-6">
