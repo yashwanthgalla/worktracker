@@ -115,35 +115,57 @@ export async function signUp(email: string, password: string, fullName?: string,
 export async function sendVerificationEmail(email: string, password: string) {
   _suppressAuthCallback = true;
   try {
-    const cred = await signInWithEmailAndPassword(auth, email, password);
-    await sendEmailVerification(cred.user);
-    await firebaseSignOut(auth);
-  } finally {
-    _suppressAuthCallback = false;
+    // Reuse existing session if available, otherwise sign in
+    if (!auth.currentUser) {
+      await signInWithEmailAndPassword(auth, email, password);
+    }
+    await sendEmailVerification(auth.currentUser!);
+    // Keep user signed in — polling will reuse this session
+  } catch (err) {
+    // If sending fails, still keep the session for polling
+    throw err;
   }
 }
 
-export async function checkEmailVerified(email: string, password: string): Promise<boolean> {
-  _suppressAuthCallback = true;
+export async function checkEmailVerified(): Promise<boolean> {
+  // _suppressAuthCallback should already be true from sendVerificationEmail
+  // and the user should already be signed in.
   try {
-    const cred = await signInWithEmailAndPassword(auth, email, password);
-    await cred.user.reload();
-    const verified = cred.user.emailVerified;
-    await firebaseSignOut(auth);
-    return verified;
+    const user = auth.currentUser;
+    if (!user) return false;
+    await user.reload();
+    return user.emailVerified;
   } catch {
     return false;
-  } finally {
-    _suppressAuthCallback = false;
   }
 }
 
-export async function completeVerification(email: string, password: string) {
-  await signInWithEmailAndPassword(auth, email, password);
-  const appUser = await buildAppUser();
-  if (!appUser) throw new Error('Unable to load user profile');
-  await setDoc(doc(db, 'user_profiles', appUser.id), { status: 'online', last_seen: new Date().toISOString(), updated_at: new Date().toISOString() }, { merge: true });
-  return { user: appUser };
+export async function completeVerification() {
+  try {
+    // User is already signed in from the polling session
+    if (!auth.currentUser) throw new Error('No active session');
+    await auth.currentUser.reload();
+
+    const appUser = await buildAppUser();
+    if (!appUser) throw new Error('Unable to load user profile');
+    await setDoc(doc(db, 'user_profiles', appUser.id), { status: 'online', last_seen: new Date().toISOString(), updated_at: new Date().toISOString() }, { merge: true });
+
+    // Release suppression after a delay so any stale onAuthStateChanged
+    // callbacks don't wipe the user before the dashboard renders
+    setTimeout(() => { _suppressAuthCallback = false; }, 3000);
+    return { user: appUser };
+  } catch (err) {
+    _suppressAuthCallback = false;
+    throw err;
+  }
+}
+
+export async function cancelEmailVerification() {
+  try {
+    if (auth.currentUser) await firebaseSignOut(auth);
+  } catch { /* ignore */ }
+  // Delay release so onAuthStateChanged(null) from sign-out is suppressed
+  setTimeout(() => { _suppressAuthCallback = false; }, 500);
 }
 
 // ─── Sign In ───
@@ -438,7 +460,7 @@ export async function signInWithPhoneOTP(phoneNumber: string): Promise<{ user: A
 export const AuthService = {
   signUp, signIn, signInWithGoogle, signOut, getSession, getCurrentUser, getCurrentUserId,
   resetPassword, updatePassword, updateProfile, onAuthStateChange,
-  sendVerificationEmail, checkEmailVerified, completeVerification,
+  sendVerificationEmail, checkEmailVerified, completeVerification, cancelEmailVerification,
   checkRedirectResult,
   initRecaptcha, sendPhoneVerificationCode, signInWithPhoneNumber,
   sendPhoneSMSOTP, verifyPhoneSMSOTP, cleanupRecaptcha,

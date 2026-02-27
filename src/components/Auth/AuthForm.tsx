@@ -26,11 +26,14 @@ export const AuthForm = () => {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [pendingCreds, setPendingCreds] = useState<{ email: string; password: string } | null>(null);
-  const [polling, setPolling] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingRef = useRef(false);
 
   // ─── Cleanup ───
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollingRef.current = false;
+  }, []);
 
   // ─── Email/password submit ───
   const handleSubmit = async (e: React.FormEvent) => {
@@ -72,27 +75,42 @@ export const AuthForm = () => {
   };
 
   // ─── Email verification polling ───
+  // Uses refs instead of state to avoid re-render → useEffect cleanup → clearInterval race
   const startPolling = useCallback(() => {
-    if (!pendingCreds || polling) return;
-    setPolling(true);
+    if (pollingRef.current) return;
+    pollingRef.current = true;
     pollRef.current = setInterval(async () => {
       try {
-        const verified = await AuthService.checkEmailVerified(pendingCreds.email, pendingCreds.password);
+        const verified = await AuthService.checkEmailVerified();
         if (verified) {
           if (pollRef.current) clearInterval(pollRef.current);
-          setPolling(false);
-          const { user } = await AuthService.completeVerification(pendingCreds.email, pendingCreds.password);
-          setUser(user);
-          toast.success('Email verified! Welcome!');
+          pollRef.current = null;
+          pollingRef.current = false;
+          try {
+            const { user } = await AuthService.completeVerification();
+            setUser(user);
+            toast.success('Email verified! Welcome!');
+          } catch (completionErr) {
+            console.error('[AuthForm] completeVerification failed:', completionErr);
+            toast.error('Verification succeeded but auto sign-in failed. Please log in.');
+            setStep('form');
+            setIsLogin(true);
+          }
         }
-      } catch { /* keep polling */ }
-    }, 3000);
-  }, [pendingCreds, polling, setUser]);
+      } catch {
+        // network error — keep polling
+      }
+    }, 2000);
+  }, [setUser]);
 
   useEffect(() => {
-    if (step === 'verify-email') startPolling();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [step, startPolling]);
+    if (step === 'verify-email' && pendingCreds) startPolling();
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+      pollingRef.current = false;
+    };
+  }, [step, pendingCreds, startPolling]);
 
   const resendVerification = async () => {
     if (!pendingCreds) return;
@@ -242,9 +260,14 @@ export const AuthForm = () => {
                   <h2 className="text-2xl font-bold text-gray-900 mb-2">Verify your email</h2>
                   <p className="text-gray-500 mb-1">We've sent a verification link to</p>
                   <p className="font-semibold text-gray-800 mb-6">{pendingCreds?.email}</p>
-                  <p className="text-sm text-gray-400 mb-8">Click the link in your email, then come back here. We'll automatically sign you in.</p>
+                  <p className="text-sm text-gray-400 mb-4">Click the link in your email, then come back here. We'll automatically sign you in.</p>
 
-                  {polling && (
+                  <div className="flex items-center gap-2 justify-center text-amber-600 bg-amber-50 rounded-lg px-4 py-2.5 mb-6">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg>
+                    <span className="text-sm font-medium">Can't find it? Check your spam or junk folder.</span>
+                  </div>
+
+                  {step === 'verify-email' && (
                     <div className="flex items-center justify-center gap-2 text-emerald-600 mb-6">
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span className="text-sm">Waiting for verification…</span>
@@ -256,7 +279,7 @@ export const AuthForm = () => {
                     <Send className="w-4 h-4" /> Resend verification email
                   </button>
 
-                  <button onClick={() => { setStep('form'); if (pollRef.current) clearInterval(pollRef.current); setPolling(false); }}
+                  <button onClick={() => { setStep('form'); if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } pollingRef.current = false; AuthService.cancelEmailVerification(); }}
                     className="flex items-center gap-2 mx-auto mt-4 text-sm text-gray-400 hover:text-gray-600">
                     <ArrowLeft className="w-4 h-4" /> Back to sign in
                   </button>
