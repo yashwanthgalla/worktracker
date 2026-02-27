@@ -65,8 +65,8 @@ function AppContent() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#f8f9fb]">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-linear-to-br from-emerald-400 to-teal-500 flex items-center justify-center animate-pulse">
-            <span className="text-white font-bold text-xl">W</span>
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center animate-pulse">
+            <img src="/Logo.png" alt="WorkTracker" className="w-12 h-12 rounded-2xl object-contain" />
           </div>
           <div className="text-gray-400 text-sm">Loading...</div>
         </div>

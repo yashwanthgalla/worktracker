@@ -38,9 +38,7 @@ export const Sidebar = () => {
     >
       {/* Logo */}
       <div className="mb-8">
-        <div className="w-10 h-10 rounded-xl bg-linear-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-200/50">
-          <span className="text-white text-lg font-bold">W</span>
-        </div>
+        <img src="/Logo.png" alt="WorkTracker" className="w-10 h-10 rounded-xl object-contain" />
         <p className="text-[9px] text-gray-400 text-center mt-1 font-medium">WorkTracker</p>
       </div>
 
