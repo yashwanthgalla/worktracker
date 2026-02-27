@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   User, Mail, Lock, MapPin, Phone, Globe, Bell, Palette, Shield,
   Save, Loader2, ChevronRight, Building2,
-  AtSign, Smartphone, ArrowRight, Check, CheckCircle2,
+  AtSign, Smartphone, ArrowRight, CheckCircle2,
   Trash2, Download, LogOut, Search, X, ChevronDown, RefreshCw,
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore';

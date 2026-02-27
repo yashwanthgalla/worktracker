@@ -146,7 +146,7 @@ export async function sendOTP(identifier: string): Promise<boolean> {
 }
 
 // ─── Verify OTP code ───
-export async function verifyOTP(identifier: string, otp: string): Promise<boolean> {
+export async function verifyOTP(_identifier: string, otp: string): Promise<boolean> {
   await initOTP();
 
   return new Promise((resolve, reject) => {
